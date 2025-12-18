@@ -35,6 +35,19 @@ with st.sidebar:
             st.error(f"{name}: 키가 없습니다!")
     
     st.divider()
+    st.subheader("👤 주인공 캐릭터 설정 (일관성 핵심)")
+    
+    # 기본값으로 잘 먹히는 프롬프트를 넣어둡니다.
+    default_char = "A cute young man with messy black hair, wearing a red hoodie and blue jeans, simple face features"
+    
+    character_desc = st.text_area(
+        "주인공 외모 묘사 (영어로 구체적일수록 좋습니다)", 
+        value=default_char,
+        height=100
+    )
+    
+    st.info("💡 팁: '빨간 후드티를 입은 검은 머리 남자'처럼 옷차림까지 고정해야 씬이 바뀌어도 옷을 갈아입지 않습니다.")
+    
     video_style = st.selectbox("화풍 선택", ["2D Cartoon", "Anime", "Cinematic Realistic", "Oil Painting"], index=0)
     num_scenes = st.slider("테스트할 씬 개수", min_value=1, max_value=5, value=2)
     # 캐릭터 일관성 (추후 구현)
@@ -48,8 +61,8 @@ def get_api_key(key_name):
         return st.secrets[key_name]
     return os.getenv(key_name)
 
-def generate_script_json(topic, num_scenes=3):
-    """Gemini를 사용하여 구조화된 대본을 생성합니다."""
+def generate_script_json(topic, character_desc, num_scenes=3):
+    """Gemini를 사용하여 구조화된 대본을 생성합니다 (일관성 강화 버전)"""
     api_key = get_api_key("GOOGLE_API_KEY")
     if not api_key:
         st.error("❌ Gemini API 키가 없습니다.")
@@ -57,17 +70,25 @@ def generate_script_json(topic, num_scenes=3):
     
     try:
         genai.configure(api_key=api_key)
-        # 속도가 빠르고 안정적인 Flash 모델 사용 권장
         model = genai.GenerativeModel('gemini-2.5-flash')
         
+        # 프롬프트 엔지니어링: 캐릭터 묘사를 시스템 레벨에서 주입
         prompt = f"""
         YouTube Short Script for topic: '{topic}'.
-        Output ONLY valid JSON. No Markdown. No ```json tags.
-        Structure:
+        
+        [IMPORTANT: Character Consistency Rule]
+        Every visual_prompt MUST start with this exact character description:
+        "{character_desc}"
+        
+        Output ONLY valid JSON. Structure:
         {{
           "video_title": "Title",
           "scenes": [
-            {{ "seq": 1, "narrative": "Voiceover text (Korean)", "visual_prompt": "Image prompt in English, {video_style} style" }},
+            {{ 
+              "seq": 1, 
+              "narrative": "Voiceover text (Korean)", 
+              "visual_prompt": "{character_desc}, [Action/Background description], {video_style} style" 
+            }},
             ... (Total {num_scenes} scenes)
           ]
         }}
@@ -75,7 +96,6 @@ def generate_script_json(topic, num_scenes=3):
         
         response = model.generate_content(prompt)
         text = response.text.strip()
-        # 실수로 마크다운이 붙어있을 경우 제거
         if text.startswith("```"):
             text = text.replace("```json", "").replace("```", "").strip()
             
@@ -183,7 +203,7 @@ if st.button("🚀 영상 생성 시작", type="primary"):
 
     # --- STEP 1: 기획 ---
     with st.status("🧠 1단계: Gemini가 대본을 기획 중입니다...", expanded=True) as status:
-        script_data = generate_script_json(topic, num_scenes=num_scenes)
+        script_data = generate_script_json(topic, character_desc, num_scenes=num_scenes)
         
         if script_data:
             st.write("✅ 대본 생성 완료!")
