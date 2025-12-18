@@ -5,89 +5,87 @@ import requests
 import fal_client
 import google.generativeai as genai
 from google.cloud import texttospeech
-# 로컬 테스트용 dotenv (클라우드에서는 secrets 사용)
+import tempfile
+from moviepy.editor import *
+
+# 로컬 환경용 (.env 파일 로드)
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
-from moviepy.editor import *
-import tempfile
 
 # --- 1. 환경 및 UI 설정 ---
-st.set_page_config(page_title="AI 영상 공장 (통합본)", page_icon="🎬", layout="wide")
-st.title("🎬 AI 유튜브 영상 자동 생성기 (올인원 버전)")
-st.markdown("주제만 입력하면 **대본(Gemini) + 이미지(Nano) + 음성(Google)**을 합쳐 영상을 만듭니다.")
+st.set_page_config(page_title="AI 영상 공장 (Final)", page_icon="🏭", layout="wide")
+st.title("🏭 AI 유튜브 풀자동 공장 (설계도 완벽 구현)")
 
-# 사이드바 설정
+# 사이드바: 설정 및 캐릭터 앵커링
 with st.sidebar:
-    st.header("⚙️ 설정 패널")
-    # API 키 상태 확인 (Secrets 또는 환경변수)
+    st.header("⚙️ 시스템 제어기")
+    
+    # API 키 검증
     api_status = {
-        "Gemini API": "GOOGLE_API_KEY" in st.secrets or os.getenv("GOOGLE_API_KEY"),
-        "Fal.ai API": "FAL_KEY" in st.secrets or os.getenv("FAL_KEY"),
-        "Google TTS": "GOOGLE_APPLICATION_CREDENTIALS_JSON" in st.secrets or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        "Gemini (Brain)": "GOOGLE_API_KEY" in st.secrets or os.getenv("GOOGLE_API_KEY"),
+        "Fal.ai (Visual)": "FAL_KEY" in st.secrets or os.getenv("FAL_KEY"),
+        "Google TTS (Voice)": "GOOGLE_APPLICATION_CREDENTIALS_JSON" in st.secrets or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     }
     for name, ready in api_status.items():
-        if ready:
-            st.success(f"{name}: 연결됨")
-        else:
-            st.error(f"{name}: 키가 없습니다!")
+        if ready: st.success(f"{name}: ON")
+        else: st.error(f"{name}: OFF")
     
     st.divider()
-    st.subheader("👤 주인공 캐릭터 설정 (일관성 핵심)")
     
-    # 기본값으로 잘 먹히는 프롬프트를 넣어둡니다.
-    default_char = "A cute young man with messy black hair, wearing a red hoodie and blue jeans, simple face features"
+    # [설계도 구현] Consistency Injection (일관성 주입)
+    st.subheader("🖼️ 캐릭터 일관성 (Consistency)")
+    default_char = "A young Korean office worker in a suit, simple clean lines, distinct facial features"
+    character_desc = st.text_area("주인공 외모 묘사 (Anchor)", value=default_char, height=80)
+    video_style = st.selectbox("화풍 (Style)", ["2D Webtoon Style", "Anime Style", "Realistic Cinematic"], index=0)
     
-    character_desc = st.text_area(
-        "주인공 외모 묘사 (영어로 구체적일수록 좋습니다)", 
-        value=default_char,
-        height=100
-    )
-    
-    st.info("💡 팁: '빨간 후드티를 입은 검은 머리 남자'처럼 옷차림까지 고정해야 씬이 바뀌어도 옷을 갈아입지 않습니다.")
-    
-    video_style = st.selectbox("화풍 선택", ["2D Cartoon", "Anime", "Cinematic Realistic", "Oil Painting"], index=0)
-    num_scenes = st.slider("테스트할 씬 개수", min_value=1, max_value=5, value=2)
-    # 캐릭터 일관성 (추후 구현)
-    # ref_image = st.file_uploader("주인공 캐릭터 이미지 (일관성용)", type=['png', 'jpg'])
+    num_scenes = st.slider("생성할 씬(Scene) 개수", 1, 5, 3)
 
-# --- 2. 내부 함수 정의 (모듈 통합) ---
+# --- 2. 핵심 모듈 함수 ---
 
 def get_api_key(key_name):
-    """Streamlit Secrets 또는 환경변수에서 API 키를 가져옵니다."""
-    if key_name in st.secrets:
-        return st.secrets[key_name]
+    if key_name in st.secrets: return st.secrets[key_name]
     return os.getenv(key_name)
 
-def generate_script_json(topic, character_desc, num_scenes=3):
-    """Gemini를 사용하여 구조화된 대본을 생성합니다 (일관성 강화 버전)"""
+def generate_script_json(topic, character_desc):
+    """
+    [Phase 1] Gemini: 기획 및 대본 작성 (언어 설정 강화)
+    """
     api_key = get_api_key("GOOGLE_API_KEY")
-    if not api_key:
-        st.error("❌ Gemini API 키가 없습니다.")
-        return None
+    if not api_key: return None
     
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
         
-        # 프롬프트 엔지니어링: 캐릭터 묘사를 시스템 레벨에서 주입
+        # 프롬프트에 '언어 규칙(Language Rules)'을 명확히 추가했습니다.
         prompt = f"""
-        YouTube Short Script for topic: '{topic}'.
+        Act as a professional YouTube content researcher and writer.
+        Topic: '{topic}'
         
-        [IMPORTANT: Character Consistency Rule]
-        Every visual_prompt MUST start with this exact character description:
+        [STRICT LANGUAGE RULES]
+        1. "narrative": Must be in **KOREAN (한국어)** for the voiceover.
+        2. "visual_prompt": Must be in **ENGLISH** for the image generator.
+        
+        [INSTRUCTION]
+        1. FACT CHECK: Verify key facts about the topic.
+        2. CHARACTER: You must include the character description in every visual prompt.
+           If the provided 'character_desc' is in Korean, TRANSLATE it into English.
+        3. STYLE: End every visual prompt with "{video_style}".
+        
+        [Ref: Character Description]
         "{character_desc}"
         
-        Output ONLY valid JSON. Structure:
+        Output ONLY valid JSON format:
         {{
-          "video_title": "Title",
+          "video_title": "Catchy Title in Korean",
           "scenes": [
             {{ 
-              "seq": 1, 
-              "narrative": "Voiceover text (Korean)", 
-              "visual_prompt": "{character_desc}, [Action/Background description], {video_style} style" 
+               "seq": 1, 
+               "narrative": "한국어 내레이션 대본 (성우용)", 
+               "visual_prompt": "Detailed English description starting with translated character traits, describing [Action/Background], ending with {video_style}" 
             }},
             ... (Total {num_scenes} scenes)
           ]
@@ -96,20 +94,20 @@ def generate_script_json(topic, character_desc, num_scenes=3):
         
         response = model.generate_content(prompt)
         text = response.text.strip()
+        # 마크다운 제거
         if text.startswith("```"):
             text = text.replace("```json", "").replace("```", "").strip()
             
         return json.loads(text)
     except Exception as e:
-        st.error(f"🚨 Gemini 오류: {e}")
+        st.error(f"🧠 Gemini 기획 오류: {e}")
         return None
 
 def generate_image(prompt, filename):
-    """Nano Banana (Fal.ai)를 사용하여 이미지를 생성합니다."""
-    # 클라우드 환경에서는 임시 폴더 사용
+    """
+    [Phase 2] Nano Banana (Fal.ai): 이미지 생성
+    """
     output_path = os.path.join(tempfile.gettempdir(), filename)
-    
-    # Fal.ai 키 설정 (환경변수로 인식됨)
     os.environ["FAL_KEY"] = get_api_key("FAL_KEY")
     
     try:
@@ -118,188 +116,154 @@ def generate_image(prompt, filename):
             arguments={
                 "prompt": prompt,
                 "image_size": "landscape_16_9",
-                "seed": 42, # 일관성을 위한 시드 고정
+                "seed": 42, # [설계도 구현] Seed 고정으로 일관성 확보
                 "num_inference_steps": 25
             }
         )
         image_url = handler.get()['images'][0]['url']
-        response = requests.get(image_url)
         with open(output_path, 'wb') as f:
-            f.write(response.content)
+            f.write(requests.get(image_url).content)
         return output_path
     except Exception as e:
-        st.error(f"🚨 이미지 생성 오류 ({filename}): {e}")
+        st.error(f"🎨 이미지 생성 오류: {e}")
         return None
 
 def generate_audio(text, filename):
-    """Google TTS를 사용하여 음성 파일을 생성합니다 (오류 수정 버전)"""
-    # 클라우드 환경에서는 임시 폴더 사용
+    """
+    [Phase 2] Google TTS: 오디오 생성
+    """
     output_path = os.path.join(tempfile.gettempdir(), filename)
+    creds_json = get_api_key("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if not creds_json: return None
     
     try:
-        # Streamlit Secrets에서 서비스 계정 JSON 정보를 가져옴
-        creds_json = get_api_key("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-        if not creds_json:
-            st.error("❌ Google TTS JSON 키가 Secrets에 없습니다.")
-            return None
-            
-        # JSON 문자열을 파싱하여 인증 정보로 사용
         from google.oauth2 import service_account
-        
-        # 🚨 [수정] strict=False 옵션 추가 (제어 문자 오류 방지)
-        try:
-            creds_info = json.loads(creds_json, strict=False)
-        except json.JSONDecodeError:
-            # 만약 그래도 실패하면, 강제로 제어 문자를 청소하고 재시도
-            # (흔히 발생하는 복사/붙여넣기 줄바꿈 오류 자동 수정)
-            fixed_json = creds_json.replace('\n', '\\n') 
-            # 단, 중괄호 사이의 필요한 줄바꿈은 유지해야 하므로 단순 치환은 위험할 수 있음.
-            # strict=False가 대부분 해결하지만, 실패 시 원본 문자열을 다시 확인해야 함.
-            st.error("❌ JSON 키 파싱 실패: Secrets에 입력한 JSON 내용을 다시 확인해주세요.")
-            return None
-
+        creds_info = json.loads(creds_json, strict=False)
         credentials = service_account.Credentials.from_service_account_info(creds_info)
         client = texttospeech.TextToSpeechClient(credentials=credentials)
 
         input_text = texttospeech.SynthesisInput(text=text)
-        # 한국어 남성 표준 음성 설정
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="ko-KR",
-            name="ko-KR-Standard-C",
-            ssml_gender=texttospeech.SsmlVoiceGender.MALE
-        )
+        voice = texttospeech.VoiceSelectionParams(language_code="ko-KR", name="ko-KR-Standard-C", ssml_gender=texttospeech.SsmlVoiceGender.MALE)
         audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
         
-        response = client.synthesize_speech(
-            input=input_text, voice=voice, audio_config=audio_config
-        )
-        
+        response = client.synthesize_speech(input=input_text, voice=voice, audio_config=audio_config)
         with open(output_path, "wb") as out:
             out.write(response.audio_content)
         return output_path
-
     except Exception as e:
-        # 만약 Google TTS가 계속 말썽이라면 gTTS(무료)로 자동 전환하는 기능 추가 가능
-        st.error(f"🚨 TTS 오류 ({filename}): {e}")
+        st.error(f"🎙️ TTS 오류: {e}")
         return None
+
+def create_zoom_effect(clip, zoom_ratio=0.04):
+    """
+    [Phase 3] Zoom Effect: 밋밋한 정지 이미지를 동적으로 변환 (Ken Burns 효과)
+    """
+    def effect(get_frame, t):
+        img = get_frame(t)
+        h, w = img.shape[:2]
+        # 시간이 지날수록 조금씩 확대 (Zoom In)
+        scale = 1 + zoom_ratio * t
         
-# --- 3. 메인 실행 로직 ---
-
-# 주제 입력
-topic = st.text_input("영상 주제를 입력하세요", placeholder="예: 라면 맛있게 끓이는 법")
-
-# 실행 버튼
-if st.button("🚀 영상 생성 시작", type="primary"):
-    if not topic:
-        st.warning("주제를 입력해주세요!")
-        st.stop()
-    
-    # 필수 API 키 확인
-    if not (get_api_key("GOOGLE_API_KEY") and get_api_key("FAL_KEY")):
-        st.error("필수 API 키(Gemini, Fal.ai)가 설정되지 않았습니다.")
-        st.stop()
-
-    result_container = st.container()
-
-    # --- STEP 1: 기획 ---
-    with st.status("🧠 1단계: Gemini가 대본을 기획 중입니다...", expanded=True) as status:
-        script_data = generate_script_json(topic, character_desc, num_scenes=num_scenes)
+        # OpenCV로 리사이즈 (속도 최적화)
+        import cv2
+        new_w, new_h = int(w * scale), int(h * scale)
+        img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         
-        if script_data:
-            st.write("✅ 대본 생성 완료!")
-            # 대본 내용 확인용 확장기
-            with st.expander("📜 생성된 대본 보기"):
-                st.json(script_data)
-            video_title = script_data.get("video_title", "output")
-            scenes = script_data.get("scenes", [])
-            status.update(label="🧠 1단계 완료: 기획안 확정", state="complete", expanded=False)
-        else:
-            status.update(label="❌ 1단계 실패: 대본 생성 오류", state="error")
-            st.stop()
+        # 중앙 크롭 (Center Crop)
+        x = (new_w - w) // 2
+        y = (new_h - h) // 2
+        return img_resized[y:y+h, x:x+w]
 
-    # --- STEP 2: 자산 생성 ---
-    st.subheader("🎨 2단계: 자산 생성 (실시간 모니터링)")
+    return clip.fl(effect)
+
+# --- 3. 메인 실행 컨트롤러 ---
+
+topic = st.text_input("영상 주제 (Topic)", placeholder="예: 비트코인 1억 돌파의 이유")
+
+if st.button("🚀 시스템 가동 (Start Process)", type="primary"):
+    if not topic: st.stop()
     
-    generated_clips = []
+    status_box = st.status("🏗️ 공장 가동 중...", expanded=True)
+    
+    # --- Phase 1: 기획 ---
+    status_box.write("🧠 Phase 1: Gemini가 시나리오를 설계 중입니다...")
+    script_data = generate_script_json(topic, character_desc)
+    
+    if not script_data:
+        status_box.update(label="❌ 기획 단계 실패", state="error")
+        st.stop()
+        
+    scenes = script_data.get("scenes", [])
+    st.json(script_data) # 기획안 출력
+    
+    # --- Phase 2: 자산 생성 ---
+    status_box.write("🎨 Phase 2: 이미지와 음성을 병렬(순차) 생성 중입니다...")
     progress_bar = st.progress(0)
+    generated_clips = []
     
     for i, scene in enumerate(scenes):
-        seq = scene["seq"]
-        narrative = scene["narrative"]
-        visual_prompt = scene["visual_prompt"]
+        idx = scene['seq']
         
-        # 진행률 업데이트
-        progress_bar.progress((i) / len(scenes))
+        # 파일명 생성
+        img_name = f"img_{idx}.png"
+        aud_name = f"aud_{idx}.mp3"
         
-        with st.container():
-            st.markdown(f"**🎬 Scene {seq} 작업 중...**")
-            cols = st.columns([3, 2]) # 이미지와 오디오 영역 분할
-            
-            # 파일명 설정 (임시 폴더 경로 제외)
-            img_name = f"temp_{seq:03d}.png"
-            audio_name = f"temp_{seq:03d}.mp3"
-            
-            # A. 이미지 생성
-            with cols[0]:
-                with st.spinner("이미지 그리는 중..."):
-                    img_path = generate_image(visual_prompt, img_name)
-                if img_path:
-                    st.image(img_path, caption=f"Scene {seq}")
-            
-            # B. 오디오 생성
-            with cols[1]:
-                with st.spinner("목소리 만드는 중..."):
-                    audio_path = generate_audio(narrative, audio_name)
-                if audio_path:
-                    st.audio(audio_path)
-            
-            # C. 클립 데이터 저장
-            if img_path:
-                duration = 3 # 기본 길이 3초
-                audioclip = None
-                if audio_path:
-                    try:
-                        audioclip = AudioFileClip(audio_path)
-                        duration = audioclip.duration
-                    except Exception as e:
-                         st.warning(f"오디오 클립 로드 실패 (기본 3초 적용): {e}")
-
-                try:
-                    # 이미지 클립 생성 및 길이 맞추기
-                    img_clip = ImageClip(img_path).set_duration(duration)
-                    if audioclip:
-                        img_clip = img_clip.set_audio(audioclip)
-                        # 팁: 이미지에 줌인 효과를 주면 더 역동적입니다. (선택 사항)
-                        # img_clip = img_clip.resize(lambda t: 1 + 0.02*t) 
-                    generated_clips.append(img_clip)
-                except Exception as e:
-                    st.error(f"클립 생성 중 오류: {e}")
-
-    progress_bar.progress(100)
-
-    # --- STEP 3: 편집 및 렌더링 ---
-    if generated_clips:
-        with st.spinner("🎞️ 3단계: 영상을 편집하고 렌더링 중입니다... (잠시만 기다리세요)"):
+        # 생성 (에러 시 해당 씬 스킵)
+        img_path = generate_image(scene['visual_prompt'], img_name)
+        aud_path = generate_audio(scene['narrative'], aud_name)
+        
+        if img_path and aud_path:
+            # 클립 조합
             try:
-                # 영상 합치기
-                final_video = concatenate_videoclips(generated_clips, method="compose")
+                audio_clip = AudioFileClip(aud_path)
+                # [설계도 구현] 기본 이미지 클립 생성
+                img_clip = ImageClip(img_path).set_duration(audio_clip.duration).resize(height=720)
                 
-                # 임시 출력 파일 경로
-                output_file = os.path.join(tempfile.gettempdir(), f"output_{seq}.mp4")
+                # [설계도 구현] Zoom Effect 적용! (정지 화면 탈피)
+                # *주의: Streamlit Cloud 사양상 복잡하면 느려질 수 있어 가볍게 적용
+                video_clip = create_zoom_effect(img_clip, zoom_ratio=0.04) 
                 
-                # 파일 쓰기 (fps 24, 코덱 설정)
-                # preset='ultrafast'로 설정하여 렌더링 속도 향상
-                final_video.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
+                video_clip = video_clip.set_audio(audio_clip)
+                generated_clips.append(video_clip)
                 
-                st.success("🎉 영상 제작이 완료되었습니다!")
-                st.balloons()
-                
-                # --- 최종 결과물 출력 ---
-                st.divider()
-                st.header(f"📺 완성된 영상: {video_title}")
-                st.video(output_file)
-                
+                # 중간 결과 보여주기
+                with st.expander(f"Scene {idx} 미리보기", expanded=False):
+                    st.image(img_path, caption=f"Scene {idx}")
+                    st.audio(aud_path)
+                    
             except Exception as e:
-                st.error(f"🚨 렌더링 오류 발생: {e}")
+                st.warning(f"Scene {idx} 조립 중 오류: {e}")
+        
+        progress_bar.progress((i + 1) / len(scenes))
+        
+    # --- Phase 3: 최종 조립 ---
+    if generated_clips:
+        status_box.write("🎬 Phase 3: FFmpeg 엔진으로 영상을 렌더링 중입니다...")
+        try:
+            # 안전한 합치기
+            final_video = concatenate_videoclips(generated_clips, method="compose")
+            
+            # 파일명 안전하게 변환
+            safe_title = "".join([c for c in script_data['video_title'] if c.isalnum()]).strip() or "output"
+            output_path = os.path.join(tempfile.gettempdir(), f"{safe_title}.mp4")
+            
+            # 렌더링 (속도 우선)
+            final_video.write_videofile(
+                output_path, 
+                fps=24, 
+                codec='libx264', 
+                audio_codec='aac', 
+                preset='ultrafast'
+            )
+            
+            status_box.update(label="✅ 모든 공정 완료!", state="complete", expanded=False)
+            st.success("🎉 영상 완성!")
+            
+            st.video(output_path)
+            with open(output_path, 'rb') as f:
+                st.download_button("📥 영상 다운로드", f, file_name=f"{safe_title}.mp4")
+                
+        except Exception as e:
+            st.error(f"렌더링 오류: {e}")
     else:
-        st.error("❌ 생성된 클립이 없어 영상을 만들 수 없습니다.")
+        st.error("❌ 생성된 클립이 없습니다.")
