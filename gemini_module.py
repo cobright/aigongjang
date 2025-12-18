@@ -21,7 +21,7 @@ def generate_script_json(topic, num_scenes=3):
         genai.configure(api_key=api_key)
         
         # ⚠️ 모델 이름 변경: 'gemini-1.5-flash'가 가장 빠르고 에러가 적습니다.
-        model = genai.GenerativeModel('gemini-1.5-flash') 
+        model = genai.GenerativeModel('gemini-2.5-flash') 
         
         prompt = f"""
         YouTube Short Script for topic: '{topic}'.
