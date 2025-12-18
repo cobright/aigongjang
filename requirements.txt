@@ -2,5 +2,5 @@ streamlit
 google-generativeai
 fal-client
 google-cloud-texttospeech
-moviepy
+moviepy==1.0.3
 python-dotenv
