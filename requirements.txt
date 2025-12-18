@@ -1,0 +1,6 @@
+streamlit
+google-generativeai
+fal-client
+google-cloud-texttospeech
+moviepy
+python-dotenv
