@@ -13,7 +13,7 @@ def generate_script_json(topic, num_scenes=3):
     주제를 받아 구조화된 JSON 대본을 생성하는 함수
     """
     # 1. 모델 설정 (Gemini 1.5 Pro 권장)
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
     # 2. 시스템 프롬프트 설계 (JSON 출력 강제 및 구조 정의)
     system_prompt = f"""
