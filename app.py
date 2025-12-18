@@ -112,7 +112,8 @@ def generate_image(prompt, filename):
         return None
 
 def generate_audio(text, filename):
-    """Google TTS를 사용하여 음성 파일을 생성합니다."""
+    """Google TTS를 사용하여 음성 파일을 생성합니다 (오류 수정 버전)"""
+    # 클라우드 환경에서는 임시 폴더 사용
     output_path = os.path.join(tempfile.gettempdir(), filename)
     
     try:
@@ -124,7 +125,19 @@ def generate_audio(text, filename):
             
         # JSON 문자열을 파싱하여 인증 정보로 사용
         from google.oauth2 import service_account
-        creds_info = json.loads(creds_json)
+        
+        # 🚨 [수정] strict=False 옵션 추가 (제어 문자 오류 방지)
+        try:
+            creds_info = json.loads(creds_json, strict=False)
+        except json.JSONDecodeError:
+            # 만약 그래도 실패하면, 강제로 제어 문자를 청소하고 재시도
+            # (흔히 발생하는 복사/붙여넣기 줄바꿈 오류 자동 수정)
+            fixed_json = creds_json.replace('\n', '\\n') 
+            # 단, 중괄호 사이의 필요한 줄바꿈은 유지해야 하므로 단순 치환은 위험할 수 있음.
+            # strict=False가 대부분 해결하지만, 실패 시 원본 문자열을 다시 확인해야 함.
+            st.error("❌ JSON 키 파싱 실패: Secrets에 입력한 JSON 내용을 다시 확인해주세요.")
+            return None
+
         credentials = service_account.Credentials.from_service_account_info(creds_info)
         client = texttospeech.TextToSpeechClient(credentials=credentials)
 
@@ -144,10 +157,12 @@ def generate_audio(text, filename):
         with open(output_path, "wb") as out:
             out.write(response.audio_content)
         return output_path
+
     except Exception as e:
+        # 만약 Google TTS가 계속 말썽이라면 gTTS(무료)로 자동 전환하는 기능 추가 가능
         st.error(f"🚨 TTS 오류 ({filename}): {e}")
         return None
-
+        
 # --- 3. 메인 실행 로직 ---
 
 # 주제 입력
