@@ -4,3 +4,4 @@ fal-client
 google-cloud-texttospeech
 moviepy==1.0.3
 python-dotenv
+opencv-python-headless
