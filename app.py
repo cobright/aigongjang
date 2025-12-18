@@ -126,28 +126,54 @@ if st.button("🚀 영상 생성 시작", type="primary"):
 
         # --- STEP 3: 편집 및 렌더링 ---
         if generated_clips:
-            with st.spinner("🎞️ 3단계: 영상을 편집하고 렌더링 중입니다... (잠시만 기다리세요)"):
+            with st.spinner("🎞️ 3단계: 영상을 편집하고 렌더링 중입니다... (메모리 최적화 모드)"):
                 try:
-                    # 영상 합치기
-                    final_video = concatenate_videoclips(generated_clips, method="compose")
-                    output_file = f"output_{video_title.replace(' ', '_')}.mp4"
+                    # [안전 장치 1] 모든 클립의 해상도를 HD(720p)로 통일
+                    # 이렇게 해야 크기가 안 맞는 이미지 때문에 에러가 나는 것을 막습니다.
+                    final_clips = [clip.resize(height=720) for clip in generated_clips]
                     
-                    # 파일 쓰기 (fps는 24로 설정)
-                    final_video.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac')
+                    # [안전 장치 2] 영상 합치기
+                    # method="compose": 크기가 살짝 달라도 억지로 합쳐주는 옵션 (안전함)
+                    final_video = concatenate_videoclips(final_clips, method="compose")
+                    
+                    # [안전 장치 3] 파일명 생성 (특수문자 제거)
+                    safe_title = "".join([c for c in video_title if c.isalnum() or c in (' ', '_')]).strip()
+                    output_filename = f"output_{safe_title}.mp4"
+                    output_path = os.path.join(tempfile.gettempdir(), output_filename)
+                    
+                    # [최적화] 렌더링 설정
+                    # fps=24: 영화 같은 느낌
+                    # preset='ultrafast': 화질을 살짝 희생하고 속도를 최대로 올림 (클라우드 환경 필수)
+                    final_video.write_videofile(
+                        output_path, 
+                        fps=24, 
+                        codec='libx264', 
+                        audio_codec='aac', 
+                        preset='ultrafast',
+                        logger=None  # 지저분한 로그 숨기기
+                    )
                     
                     st.success("🎉 영상 제작이 완료되었습니다!")
-                    st.balloons() # 풍선 효과 🎈
+                    st.balloons()
                     
                     # --- 최종 결과물 출력 ---
                     st.divider()
                     st.header(f"📺 완성된 영상: {video_title}")
-                    st.video(output_file)
+                    
+                    # 영상 재생
+                    st.video(output_path)
                     
                     # 다운로드 버튼
-                    with open(output_file, 'rb') as f:
-                        st.download_button('📥 영상 다운로드', f, file_name=output_file)
-                        
+                    with open(output_path, 'rb') as f:
+                        st.download_button(
+                            label='📥 MP4 파일 다운로드',
+                            data=f,
+                            file_name=output_filename,
+                            mime='video/mp4'
+                        )
+                    
                 except Exception as e:
-                    st.error(f"렌더링 오류 발생: {e}")
+                    st.error(f"🚨 렌더링 단계에서 오류 발생:\n{e}")
+                    st.warning("팁: 이미지 크기가 제각각이거나 메모리가 부족할 수 있습니다.")
         else:
-            st.error("생성된 클립이 없어 영상을 만들 수 없습니다.")
+            st.error("❌ 생성된 클립이 없어 영상을 만들 수 없습니다.")
