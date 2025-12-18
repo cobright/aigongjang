@@ -6,6 +6,14 @@ import fal_client
 import google.generativeai as genai
 from google.cloud import texttospeech
 import tempfile
+
+# 👇 [이 부분 추가] Pillow 라이브러리 버전 호환성 패치
+import PIL.Image
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+# 👆 [여기까지 추가]
+
+# 그 다음 moviepy를 불러와야 에러가 안 납니다.
 from moviepy.editor import *
 
 # 로컬 환경용 (.env 파일 로드)
