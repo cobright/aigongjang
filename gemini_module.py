@@ -8,51 +8,46 @@ from dotenv import load_dotenv
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
+# 기존 generate_script_json 함수를 지우고 이걸로 붙여넣으세요
 def generate_script_json(topic, num_scenes=3):
-    """
-    주제를 받아 구조화된 JSON 대본을 생성하는 함수
-    """
-    # 1. 모델 설정 (Gemini 1.5 Pro 권장)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-
-    # 2. 시스템 프롬프트 설계 (JSON 출력 강제 및 구조 정의)
-    system_prompt = f"""
-    당신은 유튜브 영상 기획 전문가입니다. 주제를 바탕으로 영상 대본과 이미지 프롬프트를 작성해주세요.
-    반드시 아래와 같은 엄격한 JSON 형식으로만 출력해야 합니다. 다른 설명은 생략하세요.
-    
-    [JSON 구조 예시]
-    {{
-      "video_title": "영상 제목",
-      "scenes": [
-        {{
-          "seq": 1,
-          "narrative": "성우가 읽을 내레이션 대본 (한 두 문장)",
-          "visual_prompt": "이미지 생성용 영문 프롬프트 (웹툰 스타일, 캐릭터 특징 포함)",
-          "mood": "분위기 (예: 밝음, 심각함)"
-        }},
-        ... (총 {num_scenes}개 씬 반복)
-      ]
-    }}
-    
-    주제: {topic}
-    씬 개수: {num_scenes}개
-    화풍: 2D 웹툰 스타일, 주인공은 파란색 후드티를 입은 밝은 표정의 청년으로 고정.
-    """
-
-    # 3. 생성 요청 및 응답 처리
     try:
-        response = model.generate_content(system_prompt)
-        # 응답 텍스트에서 JSON 부분만 추출 (혹시 모를 앞뒤 텍스트 제거)
-        response_text = response.text.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text[7:-3]
-            
-        script_data = json.loads(response_text)
-        print("✅ 제미나이: 대본 JSON 생성 완료!")
-        return script_data
+        # 키 확인용 (키 앞 4자리만 출력해봄)
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            st.error("❌ GOOGLE_API_KEY가 없습니다. Secrets 설정을 확인하세요.")
+            return None
+        
+        # 모델 설정
+        genai.configure(api_key=api_key)
+        
+        # ⚠️ 모델 이름 변경: 'gemini-1.5-flash'가 가장 빠르고 에러가 적습니다.
+        model = genai.GenerativeModel('gemini-1.5-flash') 
+        
+        prompt = f"""
+        YouTube Short Script for topic: '{topic}'.
+        Output ONLY valid JSON. No Markdown. No ```json tags.
+        Structure:
+        {{
+          "video_title": "Title",
+          "scenes": [
+            {{ "seq": 1, "narrative": "Voiceover text", "visual_prompt": "Image prompt in English" }},
+            ... (Total {num_scenes} scenes)
+          ]
+        }}
+        """
+        
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+        
+        # 실수로 마크다운(```json)이 붙어있으면 제거
+        if text.startswith("```"):
+            text = text.replace("```json", "").replace("```", "").strip()
+
+        return json.loads(text)
         
     except Exception as e:
-        print(f"❌ 제미나이 오류: {e}")
+        # ⭐ 여기가 핵심: 에러 내용을 화면에 그대로 보여줍니다.
+        st.error(f"🚨 제미나이 에러 상세 내용: {e}")
         return None
 
 # 테스트 실행
