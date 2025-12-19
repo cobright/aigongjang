@@ -1,7 +1,8 @@
 streamlit
 google-generativeai
-google-genai           <-- ⭐ 이거 꼭 추가해야 합니다! (최신 구글 SDK)
+google-genai
 google-cloud-texttospeech
-moviepy==1.0.3
 python-dotenv
+moviepy<2.0
 opencv-python-headless
+pillow
