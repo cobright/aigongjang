@@ -95,7 +95,7 @@ def generate_script_json(topic, character_desc):
         
         [STRICT LANGUAGE RULES]
         1. "narrative": Must be in **KOREAN (한국어)** for the voiceover.
-        2. "visual_prompt": Must be in **ENGLISH** (recommended for better image gen) or KOREAN.
+        2. "visual_prompt": Must be in **KOREAN (한국어)** for better image gen.
         
         [INSTRUCTION - DYNAMIC VISUALS]
         1. **NO STATIC POSES:** Do not describe characters just standing.
@@ -115,7 +115,7 @@ def generate_script_json(topic, character_desc):
             {{ 
                "seq": 1, 
                "narrative": "한국어 내레이션", 
-               "visual_prompt": "Visual description..." 
+               "visual_prompt": "Must be in **KOREAN (한국어)** for visual description..." 
             }}
           ]
         }}
@@ -138,7 +138,7 @@ def generate_image_google(prompt, filename):
         client = genai.Client(api_key=gemini_key)
         # 모델 ID 확인 필요 (imagen-3.0-generate-001 또는 gemini-pro-vision 등 상황에 맞게)
         # 현재 코드의 gemini-3-pro-image-preview는 Preview 권한이 있어야 작동합니다.
-        model_id = "gemini-2.0-flash-exp" # 혹은 "imagen-3.0-generate-001"
+        model_id = "gemini-3-pro-image-preview" # 혹은 "imagen-3.0-generate-001"
         
         # *참고: Gemini 2.0 Flash Exp는 이미지 생성을 지원하지만, 
         # 전용 Imagen 모델을 쓴다면 코드가 달라질 수 있습니다. 
@@ -302,3 +302,4 @@ if st.button("🚀 영상 생성 시작", type="primary"):
             st.error(f"렌더링 오류: {e}")
     else:
         st.error("❌ 생성된 클립이 없어 영상을 만들 수 없습니다.")
+
