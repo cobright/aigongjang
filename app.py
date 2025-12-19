@@ -53,6 +53,38 @@ STYLE_PROMPTS = {
     "🌃 사이버펑크 (Cyberpunk)": "Cyberpunk, neon lights, futuristic, dark atmosphere, glowing effects"
 }
 
+# --- [데이터 사전 추가] 장르별 최적화 설정 ---
+GENRE_SETTINGS = {
+    "📰 정보/뉴스 (Info)": {
+        "persona": "Professional Journalist",
+        "max_chars": 250, # 58초 꽉 채움
+        "structure": "Hook (Shocking Fact) -> Body (3 Key Facts) -> Outro (Conclusion)",
+        "tone": "Objective, clear, analytical, trustworthy",
+        "pacing": "Fast and informative"
+    },
+    "👄 썰/스토리 (Story)": {
+        "persona": "Friendly Storyteller",
+        "max_chars": 210, # 연기할 시간 확보
+        "structure": "Hook (Emotional Reaction) -> Body (Situation & Crisis) -> Outro (Twist/Ending)",
+        "tone": "Casual, emotional, conversational (use '음슴체' or slang)",
+        "pacing": "Dynamic with pauses for emphasis"
+    },
+    "🛍️ 리뷰/후기 (Review)": {
+        "persona": "Sharp Product Reviewer",
+        "max_chars": 180, # 제품 보여줄 시간 확보
+        "structure": "Hook (Result first) -> Body (Pros & Cons) -> Outro (Final Rating)",
+        "tone": "Honest, direct, trendy, critical",
+        "pacing": "Moderate, focus on visuals"
+    },
+    "🕯️ 감성/동기부여 (Motivation)": {
+        "persona": "Life Coach & Poet",
+        "max_chars": 150, # 여백의 미
+        "structure": "Hook (Deep Question) -> Body (Insight/Advice) -> Outro (Call to Action)",
+        "tone": "Soft, warm, inspiring, calm",
+        "pacing": "Slow, leaving space for music"
+    }
+}
+
 # 2. BGM 매핑: 사용자가 선택하면 -> 무료 음원 URL로 변환
 # (실제 운영 시에는 저작권 확인된 S3 링크나 Pexels/Youtube Audio Library 파일 권장)
 BGM_URLS = {
@@ -63,6 +95,7 @@ BGM_URLS = {
     "🎬 시네마틱 / 웅장함 (Epic)": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_736862b691.mp3",
     "🤪 펑키 / 예능 (Fun)": "https://cdn.pixabay.com/download/audio/2022/03/24/audio_823e8396d6.mp3"
 }
+
 
 # --- 1. 환경 및 UI 설정 ---
 st.set_page_config(page_title="AI 영상 공장 (Google Edition)", page_icon="🍌", layout="wide")
@@ -106,8 +139,22 @@ with st.sidebar:
     else:
         # 이미 환경변수에 있으면 성공 표시
         st.success("✅ Pexels API: Connected")
-        
-    st.divider()
+       
+    st.divider() 
+    # (사이드바 맨 위쪽, 주제 입력하는 곳 근처 혹은 설정 시작 부분)
+    st.header("🎬 기획 설정")
+    
+    # [NEW] 장르 선택 메뉴
+    selected_genre = st.selectbox(
+        "영상 장르 (Genre)", 
+        list(GENRE_SETTINGS.keys()), 
+        index=0
+    )
+    
+    # (선택된 장르에 대한 설명 표시 - 팁)
+    st.info(f"💡 특징: {GENRE_SETTINGS[selected_genre]['tone']}")
+    
+    st.divider()    
     
     # [1] 주인공 페르소나 (4단 조립)
     st.subheader("👤 주인공 (Persona)")
@@ -153,57 +200,46 @@ with st.sidebar:
     
 
 # --- 2. 핵심 모듈 함수 ---
-def generate_script_json(topic, character_desc, num_scenes):
+# [수정] genre_key 인자 추가
+def generate_script_json(topic, num_scenes, genre_key):
     """
-    [Text] Gemini: 한글 텍스트 렌더링 규칙 추가
+    [Planning] 장르별 최적화 로직이 적용된 기획안 생성
     """
     if not gemini_key: return None
+    
+    # 선택된 장르의 설정 가져오기
+    settings = GENRE_SETTINGS.get(genre_key, GENRE_SETTINGS["📰 정보/뉴스 (Info)"])
     
     try:
         genai_old.configure(api_key=gemini_key)
         model = genai_old.GenerativeModel('gemini-2.5-flash') 
         
         prompt = f"""
-        You are a YouTube Shorts Director. Create a script for: '{topic}'
+        You are a {settings['persona']} specialized in creating viral YouTube Shorts.
+        Create a script for the topic: '{topic}'
+        
+        [GENRE SPECIFIC RULES]
+        - **Genre**: {genre_key}
+        - **Tone**: {settings['tone']}
+        - **Structure Strategy**: Follow {settings['structure']}
+        - **Length Constraint**: Keep the Korean narrative STRICTLY under **{settings['max_chars']} characters** (including spaces). This is critical for video pacing.
         
         [CONSTRAINT - SCENE COUNT]
-        You must generate **EXACTLY {num_scenes} scenes**.
+        Generate exactly {num_scenes} scenes.
         
         [LANGUAGE RULES]
-        1. "narrative": **KOREAN (한국어)**. Casual spoken style.
-        2. "visual_prompt": **ENGLISH (영어)** for descriptions.
-        3. **[CRITICAL] KOREAN TEXT IN IMAGE**: 
-           - If a scene needs specific text (e.g., a signboard, a letter, a phone screen), describe the object in English but write the **text content in KOREAN inside double quotes**.
-           - Format: `Object description ..., text reads "한국어 내용", style ...`
-           - Example: `A neon sign on a dark street that says "라면 맛집" || A hand holding a smartphone showing a message "입금 완료"`
+        1. "narrative": **KOREAN (한국어)**. Style must match the Tone ({settings['tone']}).
+        2. "visual_prompt": **KOREAN (한국어)**.
+        3. **Visual Strategy**:
+           - If the genre is 'Review' or 'Info', focus on showing the object/fact clearly.
+           - If the genre is 'Story' or 'Motivation', focus on facial expressions and atmosphere.
+           - Use `[VIDEO] keyword` for generic scenes (Sky, City, Coffee).
         
-        [CONTENT GUIDE]
-        - **DYNAMIC MIX (Video vs Image)**: 
-          - Normally, write a description for AI Image generation.
-          - However, if the scene is generic (e.g., "Sky", "Traffic", "People walking", "Coffee"), use a STOCK VIDEO.
-          - To use a Stock Video, start the prompt with `[VIDEO]` followed by the keyword.
-          - Example 1: `[VIDEO] Time lapse of city traffic` (-> This will play a real video)
-          - Example 2: `[VIDEO] Ocean waves crashing`
-          - Example 3: `A close up of the character eating kimchi` (-> AI Image)          
-        - Split visual actions using " || " (Only for AI Images. Stock Video scenes should use single video).
-        
-        [AUDIO GUIDE]
-        - **Sound Effect**: Choose ONE suitable sound effect for each scene from this list:
-          ["Whoosh (전환)", "Ding (정답/아이디어)", "Camera (찰칵)", "Pop (등장)", "Keyboard (타자)", "None"]
-          - Use "Whoosh (전환)" for fast action.
-          - Use "Ding (정답/아이디어)" for key information.
-          - Use "Camera (찰칵)" for visual focus.
-          
         [OUTPUT JSON FORMAT]
         {{
-          "video_title": "Korean Title",
+          "video_title": "Title in Korean",
           "scenes": [
-            {{ 
-                "seq": 1, 
-                "narrative": "이 간판 보이시죠?", 
-                "visual_prompt": "A bright yellow wooden sign that reads \"원조 맛집\" hanging on a wall",
-                "sound_effect": "Ding (정답/아이디어)" 
-            }},
+            {{ "seq": 1, "narrative": "Korean script...", "visual_prompt": "Korean description..." }},
             ...
           ]
         }}
@@ -773,19 +809,15 @@ topic = st.text_input("영상 주제 (Topic)", placeholder="예: 집에서 만�
 # [버튼 1] 기획안 생성
 if st.button("💡 1. 기획안(대본) 생성하기", type="primary", use_container_width=True):
     if not topic:
-        st.warning("주제를 입력해주세요.")
-        st.stop()
-        
-    with st.spinner("🧠 Gemini가 기승전결(Hook-Body-CTA) 구조로 기획 중입니다..."):
-        # 1단계에서 만든 구조화된 함수 호출
-        script_data = generate_script_json(topic, character_desc, num_scenes)
-        
-        if script_data:
-            st.session_state["script_data"] = script_data
-            st.session_state["step"] = 2
-            st.rerun() # 화면 갱신
-        else:
-            st.error("기획안 생성에 실패했습니다. 다시 시도해주세요.")
+            st.error("주제를 입력해주세요.")
+    else:
+        with st.spinner("AI가 기획안을 작성 중입니다..."):
+            # [수정] selected_genre 인자 추가 전달
+            script_data = generate_script_json(topic, num_scenes, selected_genre)
+            
+            if script_data:
+                st.session_state['script_data'] = script_data
+                st.rerun()
 
 # [UI] 대본 수정 및 확정 단계
 if st.session_state["step"] >= 2 and st.session_state["script_data"]:
