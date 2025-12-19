@@ -248,6 +248,58 @@ def create_zoom_effect(clip, zoom_ratio=0.04):
 
     return clip.fl(effect)
 
+# --- (기존 create_zoom_effect 함수 아래에 추가) ---
+
+def get_korean_font():
+    """
+    한글 폰트(나눔고딕)를 임시 폴더에 다운로드하여 경로를 반환합니다.
+    (한글 깨짐 방지용)
+    """
+    font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"
+    font_path = os.path.join(tempfile.gettempdir(), "NanumGothic-Bold.ttf")
+    
+    if not os.path.exists(font_path):
+        try:
+            response = requests.get(font_url)
+            with open(font_path, "wb") as f:
+                f.write(response.content)
+        except Exception:
+            return None # 다운로드 실패 시 기본 폰트 시도
+            
+    return font_path
+
+def create_subtitle(text, duration, font_path):
+    """
+    MoviePy TextClip을 사용하여 자막 클립을 생성합니다.
+    """
+    try:
+        # 텍스트가 너무 길면 줄바꿈 처리 (간단한 로직)
+        if len(text) > 20:
+            text = text[:20] + "\n" + text[20:]
+            
+        # TextClip 생성 (ImageMagick 필요)
+        # fontsize, color, stroke_color(테두리), stroke_width(테두리두께) 설정
+        txt_clip = TextClip(
+            text, 
+            fontsize=40, 
+            color='white', 
+            font=font_path, 
+            stroke_color='black', 
+            stroke_width=2,
+            method='caption', # 줄바꿈 자동 처리를 위해 caption 모드 권장
+            size=(700, None)  # 너비 제한
+        )
+        
+        # 위치 및 시간 설정
+        txt_clip = txt_clip.set_position(('center', 'bottom')).set_duration(duration)
+        return txt_clip
+        
+    except Exception as e:
+        # ImageMagick이 없거나 오류 발생 시 None 반환 (자막 없이 진행)
+        print(f"자막 생성 실패: {e}") 
+        return None
+
+
 # --- 3. 메인 실행 컨트롤러 ---
 
 # 세션 상태 초기화 (새로고침 해도 데이터 유지)
@@ -340,25 +392,43 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
         progress_bar = st.progress(0)
         generated_clips = []
         
+        # --- 수정된 Phase 2 루프 시작 ---
         for i, scene in enumerate(final_scenes):
             idx = scene['seq']
-            status_box.write(f"  - Scene {idx} 작업 중...")
+            status_box.write(f"  - Scene {idx} 작업 중 (이미지+오디오+자막)...")
             
             timestamp = int(time.time())
             img_name = f"img_{idx}_{timestamp}.png"
             aud_name = f"aud_{idx}_{timestamp}.mp3"
             
-            # 수정된 텍스트로 오디오/이미지 생성
+            # 오디오/이미지 생성
             aud_path = generate_audio(scene['narrative'], aud_name)
             img_path = generate_image_google(scene['visual_prompt'], img_name)
             
             if img_path and aud_path:
                 try:
+                    # 1. 기본 영상 클립 생성
                     audio_clip = AudioFileClip(aud_path)
-                    img_clip = ImageClip(img_path).set_duration(audio_clip.duration).resize(height=720)
-                    video_clip = create_zoom_effect(img_clip) 
-                    video_clip = video_clip.set_audio(audio_clip)
-                    generated_clips.append(video_clip)
+                    duration = audio_clip.duration
+                    
+                    img_clip = ImageClip(img_path).set_duration(duration).resize(height=720)
+                    video_clip = create_zoom_effect(img_clip) # 줌 효과 적용
+                    
+                    # 2. 자막 클립 생성 (NEW)
+                    font_path = get_korean_font()
+                    subtitle_clip = create_subtitle(scene['narrative'], duration, font_path)
+                    
+                    # 3. 영상 + 자막 합성
+                    if subtitle_clip:
+                        # 자막이 성공적으로 만들어졌으면 합치기
+                        final_clip = CompositeVideoClip([video_clip, subtitle_clip])
+                    else:
+                        # 실패했으면 영상만 사용
+                        final_clip = video_clip
+                    
+                    final_clip = final_clip.set_audio(audio_clip)
+                    generated_clips.append(final_clip)
+                    
                 except Exception as e:
                     st.warning(f"Scene {idx} 클립 생성 실패: {e}")
             
