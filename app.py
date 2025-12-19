@@ -203,19 +203,15 @@ with st.sidebar:
 # [수정] genre_key 인자 추가
 def generate_script_json(topic, num_scenes, genre_key):
     """
-    [Debug Version] JSON 파싱 강화 및 에러 로그 출력
+    [Planning] 장르별 최적화 로직이 적용된 기획안 생성
     """
-    if not gemini_key: 
-        st.error("API 키가 없습니다.")
-        return None
+    if not gemini_key: return None
     
-    # 선택된 장르 설정 가져오기
+    # 선택된 장르의 설정 가져오기
     settings = GENRE_SETTINGS.get(genre_key, GENRE_SETTINGS["📰 정보/뉴스 (Info)"])
     
     try:
         genai_old.configure(api_key=gemini_key)
-        
-        # [수정 1] 안정적인 모델명으로 변경 (2.5 -> 1.5-flash)
         model = genai_old.GenerativeModel('gemini-2.5-flash') 
         
         prompt = f"""
@@ -231,39 +227,32 @@ def generate_script_json(topic, num_scenes, genre_key):
         [CONSTRAINT - SCENE COUNT]
         Generate exactly {num_scenes} scenes.
         
+        [LANGUAGE RULES]
+        1. "narrative": **KOREAN (한국어)**. Style must match the Tone ({settings['tone']}).
+        2. "visual_prompt": **KOREAN (한국어)**.
+        3. **Visual Strategy**:
+           - If the genre is 'Review' or 'Info', focus on showing the object/fact clearly.
+           - If the genre is 'Story' or 'Motivation', focus on facial expressions and atmosphere.
+           - Use `[VIDEO] keyword` for generic scenes (Sky, City, Coffee).
+        
         [OUTPUT JSON FORMAT]
         {{
           "video_title": "Title in Korean",
           "scenes": [
-            {{ "seq": 1, "narrative": "Korean script...", "visual_prompt": "English description..." }},
+            {{ "seq": 1, "narrative": "Korean script...", "visual_prompt": "Korean description..." }},
             ...
           ]
         }}
         """
         
-        # 요청 시작 로그
-        print(f"DEBUG: Gemini 요청 시작... (Topic: {topic})")
-        
         response = model.generate_content(prompt)
         text = response.text.strip()
+        if text.startswith("```json"): text = text[7:]
+        if text.endswith("```"): text = text[:-3]
+        return json.loads(text)
         
-        print(f"DEBUG: 응답 수신 완료. 길이: {len(text)}")
-        
-        # [수정 2] JSON 강제 추출 로직 (매우 중요!)
-        # AI가 마크다운(```json)이나 잡담을 섞어도 {} 부분만 찾아냄
-        start_idx = text.find('{')
-        end_idx = text.rfind('}') + 1
-        
-        if start_idx != -1 and end_idx != -1:
-            clean_json_text = text[start_idx:end_idx]
-            return json.loads(clean_json_text)
-        else:
-            st.error("AI 응답에서 JSON을 찾을 수 없습니다. (내용이 잘렸거나 형식이 깨짐)")
-            st.text(text) # 화면에 원본 텍스트를 보여줘서 원인 파악
-            return None
-            
     except Exception as e:
-        st.error(f"상세 에러 내용: {e}")
+        st.error(f"기획 오류: {e}")
         return None
 
 def generate_image_google(prompt, filename, ref_image_path=None):
@@ -818,17 +807,20 @@ st.header("Step 1. 기획안 작성")
 topic = st.text_input("영상 주제 (Topic)", placeholder="예: 집에서 만드는 스타벅스 돌체라떼 레시피")
 
 # [버튼 1] 기획안 생성
-if st.button: #("💡 1. 기획안(대본) 생성하기", type="primary", use_container_width=True):
+if st.button("💡 1. 기획안(대본) 생성하기", type="primary", use_container_width=True):
     if not topic:
-            st.error("주제를 입력해주세요.")
-    else:
-        with st.spinner("AI가 기획안을 작성 중입니다..."):
-            # [수정] selected_genre 인자 추가 전달
-            script_data = generate_script_json(topic, num_scenes, selected_genre)
-            
-            if script_data:
-                st.session_state['script_data'] = script_data
-                st.rerun()
+        st.warning("주제를 입력해주세요.")
+        st.stop()
+        
+    with st.spinner("🧠 Gemini가 기승전결(Hook-Body-CTA) 구조로 기획 중입니다..."):
+        # 1단계에서 만든 구조화된 함수 호출
+        script_data = generate_script_json(topic, num_scenes, selected_genre)
+        
+        if script_data:
+            st.session_state['script_data'] = script_data
+            st.rerun()
+        else:
+            st.error("기획안 생성에 실패했습니다. 다시 시도해주세요.")
 
 # [UI] 대본 수정 및 확정 단계
 if st.session_state["step"] >= 2 and st.session_state["script_data"]:
