@@ -93,62 +93,45 @@ with st.sidebar:
 
 def generate_script_json(topic, character_desc, num_scenes):
     """
-    [Text] Gemini (Old SDK): 
-    기존의 단순 생성 방식을 버리고, 'Hook-Body-Conclusion' 구조를 강제합니다.
+    [Text] Gemini: 개수 제한 엄수 및 포맷 강제
     """
     if not gemini_key: return None
     
     try:
         genai_old.configure(api_key=gemini_key)
-        
-        # 요청하신 대로 2.5 버전 사용 (주의: 2.5가 아직 배포 전이라면 1.5나 2.0-flash-exp 사용)
         model = genai_old.GenerativeModel('gemini-2.5-flash') 
         
         # 구조화된 프롬프트 설계
         prompt = f"""
-        You are an expert Content Creator for viral YouTube Shorts and TikTok.
-        Your goal is to create a script for the topic: '{topic}'
+        You are a YouTube Shorts Director. Create a script for: '{topic}'
         
-        [STRUCTURE STRATEGY - MUST FOLLOW]
-        Organize the {num_scenes} scenes strictly according to this flow:
-        1. **HOOK**: Start with a question or shock.
-        2. **BODY**: Explain the core story.
-        3. **OUTRO**: Conclusion and CTA.
-
-        [STRICT LANGUAGE RULES]
-        1. "narrative": Must be in **KOREAN (한국어)**. Conversational style.
-        2. "visual_prompt": Must be in **KOREAN (한국어)**.
+        [CONSTRAINT - SCENE COUNT]
+        You must generate **EXACTLY {num_scenes} scenes**.
+        - If scenes=2: Scene 1 (Hook/Intro), Scene 2 (Conclusion/Action).
+        - If scenes=4: Hook -> Body -> Body -> Outro.
         
-        [DYNAMIC VISUAL INSTRUCTION - IMPORTANT]
-        To make the video dynamic, **you MUST provide 2 or 3 different visual descriptions per scene**, separated by " || ".
-        - Example: "Close up of a man eating kimchi || Wide shot of the restaurant || The man giving a thumbs up"
-        - This will generate 3 images shown in sequence for this one scene.
+        [LANGUAGE RULES]
+        1. "narrative": **KOREAN (한국어)**. Casual spoken style.
+        2. "visual_prompt": **ENGLISH (영어)**. This is crucial for the image generator.
         
-        [OUTPUT FORMAT]
-        Return ONLY valid JSON:
+        [CONTENT GUIDE]
+        - Split visual actions using " || " for dynamic cuts (e.g., "Face close up || Hand action").
+        - **DO NOT** include the character description in the JSON output. I will add it programmatically. Just describe the action.
+        
+        [OUTPUT JSON FORMAT]
         {{
-          "video_title": "Title in Korean",
+          "video_title": "Korean Title",
           "scenes": [
-            {{ 
-               "seq": 1, 
-               "section": "HOOK",
-               "narrative": "Korean voiceover...", 
-               "visual_prompt": "Image Desc 1 || Image Desc 2" 
-            }},
-            ...
+            {{ "seq": 1, "narrative": "안녕하세요...", "visual_prompt": "A man drinking coffee || Close up of cup" }},
+            ... (Total {num_scenes} items)
           ]
         }}
         """
         
         response = model.generate_content(prompt)
         text = response.text.strip()
-        
-        # 마크다운 제거 (안전장치)
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.endswith("```"):
-            text = text[:-3]
-            
+        if text.startswith("```json"): text = text[7:]
+        if text.endswith("```"): text = text[:-3]
         return json.loads(text)
         
     except Exception as e:
@@ -473,32 +456,29 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             
             # 2. 비주얼 프롬프트 분석 ('||' 기준으로 쪼개기)
             # 예: "고양이가 밥먹음 || 고양이가 잠" -> ["고양이가 밥먹음", "고양이가 잠"]
-            raw_prompts = scene['visual_prompt'].split('||')
-            visual_prompts = [p.strip() for p in raw_prompts if p.strip()]
+            raw_prompts = scene['visual_prompt'].split('||')            
+            scene_sub_clips = [] 
             
-            # 만약 쪼갤 게 없으면 그냥 1개로 처리
-            if not visual_prompts:
-                visual_prompts = [scene['visual_prompt']]
+            # 총 컷 수에 맞춰 시간 배분
+            clip_duration = scene_duration / len(raw_prompts) if raw_prompts else scene_duration
             
-            # 컷 당 지속 시간 계산 (총 시간 / 이미지 개수)
-            # 예: 오디오 6초, 이미지 3장이면 -> 각 2초씩 보여줌
-            clip_duration = scene_duration / len(visual_prompts)
-            
-            scene_sub_clips = [] # 이 씬을 구성할 작은 조각 영상들
-            
-            # 3. 각 컷 별로 이미지 생성 및 클립 만들기
-            for sub_idx, prompt in enumerate(visual_prompts):
-                img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
-                status_box.write(f"    └ 컷 {sub_idx+1}/{len(visual_prompts)}: {prompt[:20]}...")
+            for sub_idx, raw_text in enumerate(raw_prompts):
+                raw_text = raw_text.strip()
+                if not raw_text: continue
                 
-                img_path = generate_image_google(prompt, img_name)
+                # [핵심 수정] 여기서 캐릭터 묘사와 화풍을 강제로 합칩니다!
+                # 구조: [주인공 묘사] + [현재 동작] + [화풍/조명]
+                final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
+                
+                img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
+                status_box.write(f"    └ 컷 {sub_idx+1}: {raw_text[:15]}... (Eng)")
+                
+                # 수정된 final_prompt를 넘겨줍니다.
+                img_path = generate_image_google(final_prompt, img_name)
                 
                 if img_path:
                     try:
-                        # 이미지 클립 생성 (계산된 시간만큼)
                         sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
-                        
-                        # 줌 효과도 각각 적용 (더 역동적임)
                         sub_clip = create_zoom_effect(sub_clip)
                         scene_sub_clips.append(sub_clip)
                     except Exception as e:
@@ -570,5 +550,4 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 st.video(output_path)
                 
             except Exception as e:
-
                 st.error(f"렌더링 오류: {e}")
