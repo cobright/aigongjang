@@ -407,23 +407,76 @@ def get_sfx_path(sfx_name):
             
     return filepath
 
+# --- (get_sfx_path 함수 아래에 추가) ---
+
 def get_korean_font():
     """
-    한글 폰트(나눔고딕)를 임시 폴더에 다운로드하여 경로를 반환합니다.
-    (한글 깨짐 방지용)
+    한글 폰트(나눔고딕)를 다운로드하여 경로를 반환합니다.
     """
-    font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"
     font_path = os.path.join(tempfile.gettempdir(), "NanumGothic-Bold.ttf")
     
-    if not os.path.exists(font_path):
+    # 이미 있으면 반환
+    if os.path.exists(font_path):
+        return font_path
+        
+    # 없으면 다운로드 (Google Fonts)
+    url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"
+    try:
+        response = requests.get(url, timeout=10)
+        with open(font_path, "wb") as f:
+            f.write(response.content)
+        return font_path
+    except Exception:
+        return None
+
+def create_subtitle_clip(text, duration, font_path):
+    """
+    [무설치] Pillow로 자막 이미지를 그려서 MoviePy 클립으로 변환
+    """
+    try:
+        w, h = 1280, 720
+        # 투명 배경 캔버스 생성
+        img = PIL.Image.new('RGBA', (w, h), (255, 255, 255, 0))
+        draw = PIL.ImageDraw.Draw(img)
+        
+        # 폰트 로드
+        font_size = 55
         try:
-            response = requests.get(font_url)
-            with open(font_path, "wb") as f:
-                f.write(response.content)
-        except Exception:
-            return None # 다운로드 실패 시 기본 폰트 시도
+            if font_path:
+                font = PIL.ImageFont.truetype(font_path, font_size)
+            else:
+                font = PIL.ImageFont.load_default()
+        except:
+            font = PIL.ImageFont.load_default()
             
-    return font_path
+        # 줄바꿈 처리 (25자 넘어가면 줄바꿈)
+        if len(text) > 25:
+            mid = len(text) // 2
+            # 중간 지점에서 가장 가까운 공백 찾기
+            split_idx = mid
+            for i in range(5): # 앞뒤 5칸 탐색
+                if text[mid-i] == ' ': split_idx = mid-i; break
+                if text[mid+i] == ' ': split_idx = mid+i; break
+            text = text[:split_idx] + "\n" + text[split_idx:].strip()
+
+        # 글자 위치 계산 (중앙 하단)
+        # Pillow 최신 버전 기준 textbbox 사용
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font, align="center")
+        text_w = right - left
+        text_h = bottom - top
+        
+        x = (w - text_w) / 2
+        y = h - 140 # 바닥에서 140px 위
+        
+        # 검은 테두리(Stroke) 그리기 -> 가독성 확보
+        draw.text((x, y), text, font=font, fill="white", stroke_width=4, stroke_fill="black", align="center")
+        
+        # MoviePy 클립 변환
+        return ImageClip(np.array(img)).set_duration(duration)
+        
+    except Exception as e:
+        print(f"자막 생성 오류: {e}")
+        return None
 
 def create_subtitle(text, duration, font_path):
     """
@@ -575,70 +628,52 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
         # 본격적인 생성 시작
         status_box = st.status("🏗️ 영상 제작 공장 가동 중...", expanded=True)
         
-        # --- Phase 2: 다이나믹 컷 생성 (컷 쪼개기 적용) ---
-        status_box.write("🎨 Phase 2: 다이나믹 컷(이미지 분할) 및 오디오 생성 중...")
+        # --- Phase 2: 최종 통합 (자막 + 효과음 + 모션) ---
+        status_box.write("🎨 Phase 2: 에셋 생성 및 영상 합성 중...")
         progress_bar = st.progress(0)
         generated_clips = []
+        
+        # 폰트 미리 다운로드 (한 번만)
+        korean_font_path = get_korean_font()
         
         for i, scene in enumerate(final_scenes):
             idx = scene['seq']
             status_box.write(f"  - Scene {idx} 작업 중...")
             
             timestamp = int(time.time())
-            
-            # [수정] 변수 정의가 먼저 있어야 합니다!
             aud_name = f"aud_{idx}_{timestamp}.mp3"
-
-            # 1. 오디오 먼저 생성 (길이를 알아야 컷을 나눌 수 있음)
+            
+            # 1. 오디오 생성
             aud_path = generate_audio(scene['narrative'], aud_name)
-            
             if not aud_path: continue
-            
+                
             audio_clip = AudioFileClip(aud_path)
             
-            # --- [수정된 효과음 믹싱 로직] ---
+            # 2. 효과음(SFX) 믹싱
             sfx_name = scene.get('sound_effect')
-            
-            # 다운로드 시도
             sfx_path = get_sfx_path(sfx_name)
             
             if sfx_path and os.path.exists(sfx_path):
                 try:
-                    # 안전하게 로드 시도
                     sfx_clip = AudioFileClip(sfx_path)
-                    
-                    # 파일이 진짜 오디오인지 확인 (duration 체크)
                     if sfx_clip.duration > 0:
                         sfx_clip = sfx_clip.volumex(0.6)
-                        # 내레이션과 합성
                         audio_clip = CompositeAudioClip([audio_clip, sfx_clip])
-                    else:
-                        print(f"⚠️ 효과음 파일 길이 0: {sfx_name}")
-                        
-                except Exception as e:
-                    # 여기서 에러가 나면 그냥 무시하고(pass) 내레이션만 진행
-                    print(f"⚠️ 효과음 합성 중 에러(무시됨): {e}")
-                    pass
+                except: pass
             
             scene_duration = audio_clip.duration
             
-            # 2. 비주얼 프롬프트 분석 ('||' 기준으로 쪼개기)
-            raw_prompts = scene['visual_prompt'].split('||')            
-            scene_sub_clips = [] 
-            
-            # 컷 당 지속 시간 계산
-            # 프롬프트가 비어있을 경우를 대비한 안전장치 추가
+            # 3. 비주얼 프롬프트 컷 쪼개기
+            raw_prompts = scene['visual_prompt'].split('||')
             valid_prompts = [p.strip() for p in raw_prompts if p.strip()]
             if not valid_prompts: valid_prompts = [scene['visual_prompt']]
             
             clip_duration = scene_duration / len(valid_prompts)
+            scene_sub_clips = [] 
             
-            # 3. 각 컷 별로 이미지 생성 및 클립 만들기            
+            # 4. 이미지 생성 및 모션 적용
             for sub_idx, raw_text in enumerate(valid_prompts):
-                
-                # [캐릭터/화풍 강제 주입]
                 final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
-                
                 img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
                 status_box.write(f"    └ 컷 {sub_idx+1}: {raw_text[:15]}...")
                 
@@ -646,21 +681,31 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 
                 if img_path:
                     try:
-                        # 이미지 클립 생성
                         sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
-                        
-                        # [랜덤 모션 적용]
-                        sub_clip = apply_random_motion(sub_clip)
-                        
+                        sub_clip = apply_random_motion(sub_clip) # 랜덤 모션
                         scene_sub_clips.append(sub_clip)
                     except Exception as e:
                         st.warning(f"이미지 클립 오류: {e}")
             
-            # 4. 조각 영상들 합치기 + 오디오 입히기
+            # 5. 최종 합성 (영상 + 오디오 + 자막)
             if scene_sub_clips:
                 try:
+                    # (1) 컷 연결
                     full_scene_clip = concatenate_videoclips(scene_sub_clips, method="compose")
+                    
+                    # (2) 오디오 설정
                     full_scene_clip = full_scene_clip.set_audio(audio_clip)
+                    
+                    # (3) [NEW] 자막 생성 및 합성
+                    subtitle_clip = create_subtitle_clip(scene['narrative'], full_scene_clip.duration, korean_font_path)
+                    
+                    if subtitle_clip:
+                        # 영상 위에 자막 얹기 (CompositeVideoClip)
+                        full_scene_clip = CompositeVideoClip([full_scene_clip, subtitle_clip])
+                    
+                    # (4) 화면 전환 효과 (Fade In)
+                    full_scene_clip = full_scene_clip.fadein(0.5)
+                    
                     generated_clips.append(full_scene_clip)
                 except Exception as e:
                     st.error(f"Scene {idx} 합치기 실패: {e}")
