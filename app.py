@@ -3,6 +3,8 @@ import os
 import json
 import tempfile
 import time
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont # Pillow 모듈
 
 # --- 라이브러리 임포트 및 예외 처리 ---
 # 1. Google GenAI (텍스트용 - 구버전 SDK)
@@ -248,8 +250,6 @@ def create_zoom_effect(clip, zoom_ratio=0.04):
 
     return clip.fl(effect)
 
-# --- (기존 create_zoom_effect 함수 아래에 추가) ---
-
 def get_korean_font():
     """
     한글 폰트(나눔고딕)를 임시 폴더에 다운로드하여 경로를 반환합니다.
@@ -270,33 +270,50 @@ def get_korean_font():
 
 def create_subtitle(text, duration, font_path):
     """
-    MoviePy TextClip을 사용하여 자막 클립을 생성합니다.
+    [무설치 버전] Pillow를 사용하여 자막 이미지를 생성합니다.
+    ImageMagick이 필요 없어 오류가 나지 않습니다.
     """
     try:
-        # 텍스트가 너무 길면 줄바꿈 처리 (간단한 로직)
-        if len(text) > 20:
-            text = text[:20] + "\n" + text[20:]
-            
-        # TextClip 생성 (ImageMagick 필요)
-        # fontsize, color, stroke_color(테두리), stroke_width(테두리두께) 설정
-        txt_clip = TextClip(
-            text, 
-            fontsize=40, 
-            color='white', 
-            font=font_path, 
-            stroke_color='black', 
-            stroke_width=2,
-            method='caption', # 줄바꿈 자동 처리를 위해 caption 모드 권장
-            size=(700, None)  # 너비 제한
-        )
+        # 1. 캔버스 크기 설정 (HD 해상도 기준)
+        w, h = 1280, 720
+        # 투명 배경 이미지 생성 (RGBA)
+        img = Image.new('RGBA', (w, h), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(img)
         
-        # 위치 및 시간 설정
-        txt_clip = txt_clip.set_position(('center', 'bottom')).set_duration(duration)
-        return txt_clip
+        # 2. 폰트 로드
+        font_size = 50
+        try:
+            if font_path:
+                font = ImageFont.truetype(font_path, font_size)
+            else:
+                # 폰트 경로 없으면 기본 폰트 (한글 깨질 수 있음)
+                font = ImageFont.load_default()
+        except Exception:
+            font = ImageFont.load_default()
+
+        # 3. 텍스트 줄바꿈 처리 (간단 버전)
+        if len(text) > 25:
+            text = text[:25] + "\n" + text[25:]
         
+        # 4. 텍스트 크기 계산 및 위치 잡기 (중앙 하단)
+        # textbbox는 Pillow 최신 버전 기준
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        text_w = right - left
+        text_h = bottom - top
+        
+        x = (w - text_w) / 2
+        y = h - 100 # 밑에서 100px 위
+        
+        # 5. 글자 테두리(Stroke) 그리기 (검은색)
+        stroke_width = 3
+        draw.text((x, y), text, font=font, fill="white", stroke_width=stroke_width, stroke_fill="black")
+
+        # 6. MoviePy 클립으로 변환
+        # Pillow 이미지 -> Numpy 배열 -> ImageClip
+        return ImageClip(np.array(img)).set_duration(duration)
+
     except Exception as e:
-        # ImageMagick이 없거나 오류 발생 시 None 반환 (자막 없이 진행)
-        print(f"자막 생성 실패: {e}") 
+        st.error(f"자막 생성 중 오류 발생: {e}")
         return None
 
 
@@ -420,10 +437,9 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                     
                     # 3. 영상 + 자막 합성
                     if subtitle_clip:
-                        # 자막이 성공적으로 만들어졌으면 합치기
+                        # 자막을 영상 위에 겹치기 (Overlay)
                         final_clip = CompositeVideoClip([video_clip, subtitle_clip])
                     else:
-                        # 실패했으면 영상만 사용
                         final_clip = video_clip
                     
                     final_clip = final_clip.set_audio(audio_clip)
