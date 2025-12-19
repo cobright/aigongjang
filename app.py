@@ -7,6 +7,7 @@ import requests
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont # Pillow 모듈
 import random
+import textwrap
 
 # --- 라이브러리 임포트 및 예외 처리 ---
 # 1. Google GenAI (텍스트용 - 구버전 SDK)
@@ -62,6 +63,7 @@ with st.sidebar:
     tts_key_path = get_secret("GOOGLE_APPLICATION_CREDENTIALS") # 로컬 파일 경로
     tts_key_json = get_secret("GOOGLE_APPLICATION_CREDENTIALS_JSON") # 클라우드용 JSON 내용
     
+    
     # 상태 표시
     if gemini_key:
         st.success("✅ Gemini API: Connected")
@@ -72,6 +74,16 @@ with st.sidebar:
         st.success("✅ Google TTS: Connected")
     else:
         st.error("❌ Google TTS: Missing Credentials")
+        
+    # [NEW] Pexels 키 입력 추가
+    # secrets.toml에 PEXELS_API_KEY가 있으면 그걸 쓰고, 없으면 입력창을 띄움
+    pexels_key_env = get_secret("PEXELS_API_KEY")
+    if not pexels_key_env:
+        os.environ["PEXELS_API_KEY"] = st.text_input("Pexels API Key (스톡 영상용)", type="password")
+    else:
+        # 이미 환경변수에 있으면 성공 표시
+        st.success("✅ Pexels API: Connected")
+        
     
     st.divider()
     
@@ -116,8 +128,15 @@ def generate_script_json(topic, character_desc, num_scenes):
            - Example: `A neon sign on a dark street that says "라면 맛집" || A hand holding a smartphone showing a message "입금 완료"`
         
         [CONTENT GUIDE]
-        - Split visual actions using " || " for dynamic cuts.
-        - **DO NOT** include the character description in the JSON output.
+        - **DYNAMIC MIX (Video vs Image)**: 
+          - Normally, write a description for AI Image generation.
+          - However, if the scene is generic (e.g., "Sky", "Traffic", "People walking", "Coffee"), use a STOCK VIDEO.
+          - To use a Stock Video, start the prompt with `[VIDEO]` followed by the keyword.
+          - Example 1: `[VIDEO] Time lapse of city traffic` (-> This will play a real video)
+          - Example 2: `[VIDEO] Ocean waves crashing`
+          - Example 3: `A close up of the character eating kimchi` (-> AI Image)
+          
+        - Split visual actions using " || " (Only for AI Images. Stock Video scenes should use single video).
         
         [AUDIO GUIDE]
         - **Sound Effect**: Choose ONE suitable sound effect for each scene from this list:
@@ -431,16 +450,16 @@ def get_korean_font():
 
 def create_subtitle_clip(text, duration, font_path):
     """
-    [무설치] Pillow로 자막 이미지를 그려서 MoviePy 클립으로 변환
+    [개선됨] 긴 문장 자동 줄바꿈 + 중앙 정렬 + 폰트 크기 최적화
     """
     try:
         w, h = 1280, 720
-        # 투명 배경 캔버스 생성
+        # 투명 캔버스 생성
         img = PIL.Image.new('RGBA', (w, h), (255, 255, 255, 0))
         draw = PIL.ImageDraw.Draw(img)
         
-        # 폰트 로드
-        font_size = 55
+        # 1. 폰트 설정 (크기를 55 -> 40으로 줄임)
+        font_size = 40 
         try:
             if font_path:
                 font = PIL.ImageFont.truetype(font_path, font_size)
@@ -448,34 +467,106 @@ def create_subtitle_clip(text, duration, font_path):
                 font = PIL.ImageFont.load_default()
         except:
             font = PIL.ImageFont.load_default()
-            
-        # 줄바꿈 처리 (25자 넘어가면 줄바꿈)
-        if len(text) > 25:
-            mid = len(text) // 2
-            # 중간 지점에서 가장 가까운 공백 찾기
-            split_idx = mid
-            for i in range(5): # 앞뒤 5칸 탐색
-                if text[mid-i] == ' ': split_idx = mid-i; break
-                if text[mid+i] == ' ': split_idx = mid+i; break
-            text = text[:split_idx] + "\n" + text[split_idx:].strip()
 
-        # 글자 위치 계산 (중앙 하단)
-        # Pillow 최신 버전 기준 textbbox 사용
-        left, top, right, bottom = draw.textbbox((0, 0), text, font=font, align="center")
+        # 2. 자동 줄바꿈 (핵심!)
+        # 화면 폭에 맞춰서 약 30~35글자마다 줄을 바꿈
+        wrapped_text = textwrap.fill(text, width=35)
+
+        # 3. 글자 크기 및 위치 계산 (여러 줄일 경우를 대비해 multiline 사용)
+        # 텍스트 박스 크기 구하기
+        left, top, right, bottom = draw.multiline_textbbox((0, 0), wrapped_text, font=font, align="center")
         text_w = right - left
         text_h = bottom - top
         
+        # 정중앙 하단 위치 계산
         x = (w - text_w) / 2
-        y = h - 140 # 바닥에서 140px 위
+        y = h - text_h - 50 # 바닥에서 50px 위 (여유 공간 확보)
+
+        # 4. 그리기 (테두리 포함)
+        draw.multiline_text(
+            (x, y), 
+            wrapped_text, 
+            font=font, 
+            fill="white", 
+            stroke_width=3, 
+            stroke_fill="black", 
+            align="center"
+        )
         
-        # 검은 테두리(Stroke) 그리기 -> 가독성 확보
-        draw.text((x, y), text, font=font, fill="white", stroke_width=4, stroke_fill="black", align="center")
-        
-        # MoviePy 클립 변환
         return ImageClip(np.array(img)).set_duration(duration)
         
     except Exception as e:
         print(f"자막 생성 오류: {e}")
+        return None
+
+# --- (create_subtitle_clip 함수 아래에 추가) ---
+
+def get_pexels_video(query, duration):
+    """
+    [Stock Video] Pexels API를 사용하여 무료 영상을 다운로드하고,
+    오디오 길이에 맞게 편집(Loop/Cut)하여 반환합니다.
+    """
+    # 1. API 키 확인 (사이드바 입력값 또는 Secrets)
+    api_key = get_secret("PEXELS_API_KEY") 
+    if not api_key:
+        st.error("❌ Pexels API Key가 없습니다. 사이드바 설정을 확인하세요.")
+        return None
+        
+    # 2. 검색 요청
+    headers = {'Authorization': api_key}
+    # landscape(가로), medium(중간화질) 설정으로 전송량 절약
+    params = {'query': query, 'per_page': 1, 'orientation': 'landscape', 'size': 'medium'}
+    
+    try:
+        response = requests.get('https://api.pexels.com/videos/search', headers=headers, params=params, timeout=10)
+        data = response.json()
+        
+        if not data.get('videos'):
+            return None # 검색 결과 없음
+            
+        # 3. 영상 URL 추출 (가장 적당한 화질 선택)
+        video_files = data['videos'][0]['video_files']
+        # 너비가 1280에 가까운 파일 찾기 (HD급)
+        target_video = min(video_files, key=lambda x: abs(x['width'] - 1280))
+        video_url = target_video['link']
+        
+        # 4. 다운로드 및 캐싱
+        safe_name = "".join(x for x in query if x.isalnum())
+        filename = f"pexels_{safe_name}.mp4"
+        filepath = os.path.join(tempfile.gettempdir(), filename)
+        
+        if not os.path.exists(filepath):
+            vid_response = requests.get(video_url, stream=True)
+            with open(filepath, 'wb') as f:
+                for chunk in vid_response.iter_content(chunk_size=1024):
+                    if chunk: f.write(chunk)
+                    
+        # 5. MoviePy 클립 변환 및 길이 맞춤
+        clip = VideoFileClip(filepath)
+        
+        # 소리 제거 (TTS와 겹치므로)
+        clip = clip.without_audio()
+        
+        # 길이 맞추기 로직
+        if clip.duration < duration:
+            # 영상이 짧으면 반복(Loop)
+            # vfx.loop는 최신 버전에서 방식이 다를 수 있어 안전하게 수동 반복
+            loop_count = int(duration // clip.duration) + 2
+            clip = concatenate_videoclips([clip] * loop_count)
+            
+        # 필요한 길이만큼 자르기
+        clip = clip.subclip(0, duration)
+        
+        # 720p로 리사이징
+        clip = clip.resize(height=720)
+        
+        # 만약 비율이 안 맞으면 중앙 크롭 (16:9 강제)
+        # (간단하게 구현하기 위해 resize만 적용, 필요시 crop 추가 가능)
+        
+        return clip
+
+    except Exception as e:
+        print(f"Pexels 다운로드 실패: {e}")
         return None
 
 def create_subtitle(text, duration, font_path):
@@ -628,12 +719,11 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
         # 본격적인 생성 시작
         status_box = st.status("🏗️ 영상 제작 공장 가동 중...", expanded=True)
         
-        # --- Phase 2: 최종 통합 (자막 + 효과음 + 모션) ---
-        status_box.write("🎨 Phase 2: 에셋 생성 및 영상 합성 중...")
+        # --- Phase 2: 스톡 비디오 + AI 이미지 하이브리드 생성 ---
+        status_box.write("🎨 Phase 2: 에셋 생성(Video/Image) 및 합성 중...")
         progress_bar = st.progress(0)
         generated_clips = []
         
-        # 폰트 미리 다운로드 (한 번만)
         korean_font_path = get_korean_font()
         
         for i, scene in enumerate(final_scenes):
@@ -643,72 +733,85 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             timestamp = int(time.time())
             aud_name = f"aud_{idx}_{timestamp}.mp3"
             
-            # 1. 오디오 생성
+            # 1. 오디오 & 효과음 생성
             aud_path = generate_audio(scene['narrative'], aud_name)
             if not aud_path: continue
                 
             audio_clip = AudioFileClip(aud_path)
             
-            # 2. 효과음(SFX) 믹싱
+            # 효과음 믹싱
             sfx_name = scene.get('sound_effect')
             sfx_path = get_sfx_path(sfx_name)
-            
             if sfx_path and os.path.exists(sfx_path):
                 try:
-                    sfx_clip = AudioFileClip(sfx_path)
-                    if sfx_clip.duration > 0:
-                        sfx_clip = sfx_clip.volumex(0.6)
-                        audio_clip = CompositeAudioClip([audio_clip, sfx_clip])
+                    sfx_clip = AudioFileClip(sfx_path).volumex(0.6)
+                    audio_clip = CompositeAudioClip([audio_clip, sfx_clip])
                 except: pass
             
             scene_duration = audio_clip.duration
+            visual_prompt = scene['visual_prompt'].strip()
             
-            # 3. 비주얼 프롬프트 컷 쪼개기
-            raw_prompts = scene['visual_prompt'].split('||')
-            valid_prompts = [p.strip() for p in raw_prompts if p.strip()]
-            if not valid_prompts: valid_prompts = [scene['visual_prompt']]
-            
-            clip_duration = scene_duration / len(valid_prompts)
-            scene_sub_clips = [] 
-            
-            # 4. 이미지 생성 및 모션 적용
-            for sub_idx, raw_text in enumerate(valid_prompts):
-                final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
-                img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
-                status_box.write(f"    └ 컷 {sub_idx+1}: {raw_text[:15]}...")
+            # ==========================================
+            # [분기점] 스톡 비디오냐? AI 이미지냐?
+            # ==========================================
+            if visual_prompt.upper().startswith("[VIDEO]"):
+                # (A) 스톡 비디오 모드
+                search_query = visual_prompt[7:].strip() # "[VIDEO]" 제거
+                status_box.write(f"    🎥 스톡 비디오 검색: {search_query}")
                 
-                img_path = generate_image_google(final_prompt, img_name)
+                # Pexels 다운로드 (오디오 길이만큼 확보)
+                video_clip = get_pexels_video(search_query, scene_duration)
                 
-                if img_path:
-                    try:
-                        sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
-                        sub_clip = apply_random_motion(sub_clip) # 랜덤 모션
-                        scene_sub_clips.append(sub_clip)
-                    except Exception as e:
-                        st.warning(f"이미지 클립 오류: {e}")
-            
-            # 5. 최종 합성 (영상 + 오디오 + 자막)
-            if scene_sub_clips:
+                if video_clip:
+                    scene_final_clip = video_clip.set_audio(audio_clip)
+                else:
+                    # 실패하면 AI 이미지로 대체하기 위해 태그 떼고 진행
+                    status_box.warning("스톡 비디오 실패 -> AI 이미지로 대체")
+                    visual_prompt = search_query # 태그 제거된 텍스트로 아래 로직(B) 실행
+                    scene_final_clip = None 
+
+            if not visual_prompt.upper().startswith("[VIDEO]") or scene_final_clip is None:
+                # (B) AI 이미지 모드 (기존 로직)
+                raw_prompts = visual_prompt.split('||')
+                valid_prompts = [p.strip() for p in raw_prompts if p.strip()]
+                if not valid_prompts: valid_prompts = [visual_prompt]
+                
+                clip_duration = scene_duration / len(valid_prompts)
+                scene_sub_clips = []
+                
+                for sub_idx, raw_text in enumerate(valid_prompts):
+                    # 캐릭터 일관성 + 화풍 적용
+                    final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
+                    img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
+                    status_box.write(f"    🎨 AI 그리기 ({sub_idx+1}/{len(valid_prompts)}): {raw_text[:10]}...")
+                    
+                    img_path = generate_image_google(final_prompt, img_name)
+                    if img_path:
+                        try:
+                            sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
+                            sub_clip = apply_random_motion(sub_clip)
+                            scene_sub_clips.append(sub_clip)
+                        except: pass
+                
+                if scene_sub_clips:
+                    scene_final_clip = concatenate_videoclips(scene_sub_clips, method="compose")
+                    scene_final_clip = scene_final_clip.set_audio(audio_clip)
+                else:
+                    scene_final_clip = None
+
+            # 3. 최종 합성 (자막 + 트랜지션)
+            if scene_final_clip:
                 try:
-                    # (1) 컷 연결
-                    full_scene_clip = concatenate_videoclips(scene_sub_clips, method="compose")
-                    
-                    # (2) 오디오 설정
-                    full_scene_clip = full_scene_clip.set_audio(audio_clip)
-                    
-                    # (3) [NEW] 자막 생성 및 합성
-                    subtitle_clip = create_subtitle_clip(scene['narrative'], full_scene_clip.duration, korean_font_path)
-                    
+                    # 자막
+                    subtitle_clip = create_subtitle_clip(scene['narrative'], scene_final_clip.duration, korean_font_path)
                     if subtitle_clip:
-                        # 영상 위에 자막 얹기 (CompositeVideoClip)
-                        full_scene_clip = CompositeVideoClip([full_scene_clip, subtitle_clip])
+                        scene_final_clip = CompositeVideoClip([scene_final_clip, subtitle_clip])
                     
-                    # (4) 화면 전환 효과 (Fade In)
-                    full_scene_clip = full_scene_clip.fadein(0.5)
-                    
-                    generated_clips.append(full_scene_clip)
+                    # 페이드인
+                    scene_final_clip = scene_final_clip.fadein(0.5)
+                    generated_clips.append(scene_final_clip)
                 except Exception as e:
-                    st.error(f"Scene {idx} 합치기 실패: {e}")
+                    st.error(f"합성 실패: {e}")
             
             progress_bar.progress((i + 1) / len(final_scenes))
 
