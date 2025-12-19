@@ -6,3 +6,4 @@ python-dotenv
 moviepy<2.0
 opencv-python-headless
 pillow
+requests
