@@ -250,73 +250,138 @@ def create_zoom_effect(clip, zoom_ratio=0.04):
 
 # --- 3. 메인 실행 컨트롤러 ---
 
-topic = st.text_input("영상 주제 (Topic)", placeholder="예: 맛있는 김치찌개 끓이는 법")
+# 세션 상태 초기화 (새로고침 해도 데이터 유지)
+if "script_data" not in st.session_state:
+    st.session_state["script_data"] = None
+if "step" not in st.session_state:
+    st.session_state["step"] = 1
 
-if st.button("🚀 영상 생성 시작", type="primary"):
+st.divider()
+st.header("Step 1. 기획안 작성")
+topic = st.text_input("영상 주제 (Topic)", placeholder="예: 집에서 만드는 스타벅스 돌체라떼 레시피")
+
+# [버튼 1] 기획안 생성
+if st.button("💡 1. 기획안(대본) 생성하기", type="primary", use_container_width=True):
     if not topic:
         st.warning("주제를 입력해주세요.")
         st.stop()
-    
-    status_box = st.status("🏗️ 작업 시작...", expanded=True)
-    
-    # Phase 1
-    status_box.write("🧠 Phase 1: 시나리오 기획 중 (Gemini 2.5 Flash)...")
-    script_data = generate_script_json(topic, character_desc, num_scenes)
-    
-    if not script_data:
-        status_box.update(label="❌ 기획 실패", state="error")
-        st.stop()
         
-    scenes = script_data.get("scenes", [])
-    st.json(script_data) # 디버깅용 표시
+    with st.spinner("🧠 Gemini가 기승전결(Hook-Body-CTA) 구조로 기획 중입니다..."):
+        # 1단계에서 만든 구조화된 함수 호출
+        script_data = generate_script_json(topic, character_desc, num_scenes)
+        
+        if script_data:
+            st.session_state["script_data"] = script_data
+            st.session_state["step"] = 2
+            st.rerun() # 화면 갱신
+        else:
+            st.error("기획안 생성에 실패했습니다. 다시 시도해주세요.")
+
+# [UI] 대본 수정 및 확정 단계
+if st.session_state["step"] >= 2 and st.session_state["script_data"]:
+    st.divider()
+    st.header("Step 2. 대본 및 연출 수정")
+    st.info("💡 아래 내용을 수정하면, 수정된 내용대로 영상이 만들어집니다.")
+
+    data = st.session_state["script_data"]
+    scenes = data.get("scenes", [])
     
-    # Phase 2
-    status_box.write("🎨 Phase 2: 이미지 및 오디오 생성 중...")
-    progress_bar = st.progress(0)
-    generated_clips = []
-    
-    for i, scene in enumerate(scenes):
-        idx = scene['seq']
-        status_box.write(f"  - Scene {idx} 생성 중...")
+    # 폼(Form)을 사용하여 한 번에 데이터 수집
+    with st.form("script_edit_form"):
+        # 타이틀 수정
+        new_title = st.text_input("영상 제목", value=data.get("video_title", ""))
         
-        # 파일명 중복 방지를 위해 timestamp 추가 권장
-        timestamp = int(time.time())
-        img_name = f"img_{idx}_{timestamp}.png"
-        aud_name = f"aud_{idx}_{timestamp}.mp3"
+        edited_scenes = []
+        for i, scene in enumerate(scenes):
+            st.subheader(f"🎬 Scene {scene['seq']} ({scene.get('section', 'General')})")
+            
+            # 레이아웃 2단 분리 (왼쪽: 대본 / 오른쪽: 그림 묘사)
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # key를 고유하게 지정해야 함
+                new_narrative = st.text_area(
+                    label="🗣️ 내레이션 (한국어)", 
+                    value=scene['narrative'], 
+                    height=100,
+                    key=f"narr_area_{i}"
+                )
+            
+            with col2:
+                new_visual = st.text_area(
+                    label="🖼️ 그림 묘사 (영어 권장)", 
+                    value=scene['visual_prompt'], 
+                    height=100,
+                    key=f"vis_area_{i}"
+                )
+            
+            # 수정된 내용을 리스트에 담을 준비 (실제 업데이트는 버튼 클릭 시 처리)
+            # 여기서는 폼 내부라 UI만 보여주고, 데이터 처리는 아래 submit 버튼 이후에 함.
+            
+        # [버튼 2] 영상 생성 시작
+        generate_btn = st.form_submit_button("🎬 2. 이 내용으로 영상 만들기 (Start Generation)", type="primary", use_container_width=True)
+
+    # 폼 제출 버튼이 눌렸을 때 실행
+    if generate_btn:
+        # 수정된 데이터 수집
+        final_scenes = []
+        for i, org_scene in enumerate(scenes):
+            final_scenes.append({
+                "seq": org_scene['seq'],
+                "narrative": st.session_state[f"narr_area_{i}"],      # 위 text_area의 key값으로 읽어옴
+                "visual_prompt": st.session_state[f"vis_area_{i}"]   # 위 text_area의 key값으로 읽어옴
+            })
+            
+        # 본격적인 생성 시작
+        status_box = st.status("🏗️ 영상 제작 공장 가동 중...", expanded=True)
         
-        aud_path = generate_audio(scene['narrative'], aud_name)
-        img_path = generate_image_google(scene['visual_prompt'], img_name)
+        # Phase 2: Asset Generation
+        status_box.write("🎨 Phase 2: 이미지 및 오디오 생성 중...")
+        progress_bar = st.progress(0)
+        generated_clips = []
         
-        if img_path and aud_path:
+        for i, scene in enumerate(final_scenes):
+            idx = scene['seq']
+            status_box.write(f"  - Scene {idx} 작업 중...")
+            
+            timestamp = int(time.time())
+            img_name = f"img_{idx}_{timestamp}.png"
+            aud_name = f"aud_{idx}_{timestamp}.mp3"
+            
+            # 수정된 텍스트로 오디오/이미지 생성
+            aud_path = generate_audio(scene['narrative'], aud_name)
+            img_path = generate_image_google(scene['visual_prompt'], img_name)
+            
+            if img_path and aud_path:
+                try:
+                    audio_clip = AudioFileClip(aud_path)
+                    img_clip = ImageClip(img_path).set_duration(audio_clip.duration).resize(height=720)
+                    video_clip = create_zoom_effect(img_clip) 
+                    video_clip = video_clip.set_audio(audio_clip)
+                    generated_clips.append(video_clip)
+                except Exception as e:
+                    st.warning(f"Scene {idx} 클립 생성 실패: {e}")
+            
+            progress_bar.progress((i + 1) / len(final_scenes))
+
+        # Phase 3: Final Rendering
+        if generated_clips:
+            status_box.write("🎬 Phase 3: 최종 합치기 및 렌더링...")
             try:
-                audio_clip = AudioFileClip(aud_path)
-                # 이미지 지속시간을 오디오 길이에 맞춤
-                img_clip = ImageClip(img_path).set_duration(audio_clip.duration).resize(height=720)
-                video_clip = create_zoom_effect(img_clip) 
-                video_clip = video_clip.set_audio(audio_clip)
-                generated_clips.append(video_clip)
+                final_video = concatenate_videoclips(generated_clips, method="compose")
+                
+                safe_title = "".join([c for c in new_title if c.isalnum()]).strip() or "output"
+                output_path = os.path.join(tempfile.gettempdir(), f"{safe_title}_final.mp4")
+                
+                # 프리셋을 ultrafast로 하여 속도 최적화
+                final_video.write_videofile(output_path, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast')
+                
+                status_box.update(label="✅ 영상 완성!", state="complete", expanded=False)
+                st.balloons()
+                st.success(f"🎉 '{new_title}' 영상이 완성되었습니다!")
+                st.video(output_path)
+                
             except Exception as e:
-                st.warning(f"Scene {idx} 클립 생성 실패: {e}")
-        
-        progress_bar.progress((i + 1) / len(scenes))
-        
-    # Phase 3
-    if generated_clips:
-        status_box.write("🎬 Phase 3: 최종 렌더링 중 (FFmpeg)...")
-        try:
-            final_video = concatenate_videoclips(generated_clips, method="compose")
-            
-            # 안전한 파일명 생성
-            safe_title = "".join([c for c in topic if c.isalnum()]).strip()
-            output_path = os.path.join(tempfile.gettempdir(), f"{safe_title}_final.mp4")
-            
-            final_video.write_videofile(output_path, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast')
-            
-            status_box.update(label="✅ 완료!", state="complete", expanded=False)
-            st.success("🎉 영상 생성이 완료되었습니다!")
-            st.video(output_path)
-            
-        except Exception as e:
-            st.error(f"렌더링 오류: {e}")
-    else:
-        st.error("❌ 생성된 클립이 없어 영상을 만들 수 없습니다.")
+                st.error(f"렌더링 오류: {e}")
+        else:
+            st.error("❌ 생성된 클립이 없습니다.")
