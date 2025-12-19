@@ -76,54 +76,72 @@ with st.sidebar:
     character_desc = st.text_area("주인공 외모 묘사", value=default_char, height=80)
     video_style = st.selectbox("화풍 (Style)", ["2D Webtoon Style", "Anime Style", "Realistic Cinematic", "Oil Painting"], index=0)
     
-    num_scenes = st.slider("생성할 씬(Scene) 개수", 1, 5, 2)
+    num_scenes = st.slider("생성할 씬(Scene) 개수 (권장: 4개 이상)", 2, 6, 4)
 
 # --- 2. 핵심 모듈 함수 ---
 
-def generate_script_json(topic, character_desc):
-    """[Text] Gemini (Old SDK): 기획 및 대본 작성"""
+def generate_script_json(topic, character_desc, num_scenes):
+    """
+    [Text] Gemini (Old SDK): 
+    기존의 단순 생성 방식을 버리고, 'Hook-Body-Conclusion' 구조를 강제합니다.
+    """
     if not gemini_key: return None
     
     try:
         genai_old.configure(api_key=gemini_key)
-        # 수정: 모델명을 2.5(존재안함) -> 1.5-flash로 변경
-        model = genai_old.GenerativeModel('gemini-2.5-flash')
         
+        # 요청하신 대로 2.5 버전 사용 (주의: 2.5가 아직 배포 전이라면 1.5나 2.0-flash-exp 사용)
+        model = genai_old.GenerativeModel('gemini-2.5-flash') 
+        
+        # 구조화된 프롬프트 설계
         prompt = f"""
-        Act as a professional YouTube content researcher and writer.
-        Topic: '{topic}'
+        You are an expert Content Creator for viral YouTube Shorts and TikTok.
+        Your goal is to create a script for the topic: '{topic}'
         
+        [STRUCTURE STRATEGY - MUST FOLLOW]
+        Organize the {num_scenes} scenes strictly according to this flow:
+        1. **HOOK (First 25% of scenes)**: Start with a question, a shocking fact, or a "Did you know?". Grab attention in 3 seconds.
+        2. **BODY (Middle 50% of scenes)**: Explain the "How-to", "Why", or the core story. Fast-paced information.
+        3. **OUTRO/CTA (Last 25% of scenes)**: A quick summary or punchline. End with a Call to Action (e.g., "Try this today!").
+
         [STRICT LANGUAGE RULES]
-        1. "narrative": Must be in **KOREAN (한국어)** for the voiceover.
-        2. "visual_prompt": Must be in **KOREAN (한국어)** for better image gen.
+        1. "narrative": Must be in **KOREAN (한국어)**. Conversational, spoken style (구어체).
+           - Do NOT use: "안녕하십니까", "오늘은~". (Too formal)
+           - USE: "이거 진짜 대박입니다.", "혹시 알고 계셨나요?" (Engaging)
+        2. "visual_prompt": Must be in **KOREAN (한국어)** (Best for image generation).
         
-        [INSTRUCTION - DYNAMIC VISUALS]
-        1. **NO STATIC POSES:** Do not describe characters just standing.
-        2. **ACTION & MOTION:** Describe specific moments (e.g., "running," "laughing").
-        3. **CAMERA ANGLES:** Use "low angle," "close-up," etc.
-        
-        [CHARACTER CONSISTENCY]
-        Start visual prompt with: "{character_desc}"
-        
-        [STYLE]
-        End visual prompt with: "{video_style}"
-        
-        Output ONLY valid JSON format:
+        [VISUAL DIRECTIVES]
+        - Start every visual prompt with: "{character_desc}"
+        - End every visual prompt with: "{video_style}, Cinematic lighting, 8k resolution"
+        - **Constraint**: Describe the character DOING something active (eating, running, pointing, shocked face). NO boring standing poses.
+
+        [OUTPUT FORMAT]
+        Return ONLY valid JSON:
         {{
-          "video_title": "Title Here",
+          "video_title": "A short, catchy viral title in Korean",
           "scenes": [
             {{ 
                "seq": 1, 
-               "narrative": "한국어 내레이션", 
-               "visual_prompt": "Must be in **KOREAN (한국어)** for visual description..." 
-            }}
+               "section": "HOOK",
+               "narrative": "Korean voiceover text...", 
+               "visual_prompt": "Detailed Korean image description..." 
+            }},
+            ... (Generate exactly {num_scenes} scenes)
           ]
         }}
-        Generate exactly {num_scenes} scenes.
         """
+        
         response = model.generate_content(prompt)
-        text = response.text.strip().replace("```json", "").replace("```", "")
+        text = response.text.strip()
+        
+        # 마크다운 제거 (안전장치)
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+            
         return json.loads(text)
+        
     except Exception as e:
         st.error(f"🧠 Gemini 기획 오류: {e}")
         return None
@@ -242,8 +260,8 @@ if st.button("🚀 영상 생성 시작", type="primary"):
     status_box = st.status("🏗️ 작업 시작...", expanded=True)
     
     # Phase 1
-    status_box.write("🧠 Phase 1: 시나리오 기획 중 (Gemini 1.5 Flash)...")
-    script_data = generate_script_json(topic, character_desc)
+    status_box.write("🧠 Phase 1: 시나리오 기획 중 (Gemini 2.5 Flash)...")
+    script_data = generate_script_json(topic, character_desc, num_scenes)
     
     if not script_data:
         status_box.update(label="❌ 기획 실패", state="error")
@@ -302,5 +320,3 @@ if st.button("🚀 영상 생성 시작", type="primary"):
             st.error(f"렌더링 오류: {e}")
     else:
         st.error("❌ 생성된 클립이 없어 영상을 만들 수 없습니다.")
-
-
