@@ -144,6 +144,10 @@ with st.sidebar:
     st.subheader("🎵 배경음악 (BGM)")
     bgm_mood = st.selectbox("분위기 선택", list(BGM_URLS.keys()), index=1)
     
+    # [NEW] 자막 ON/OFF 기능 추가
+    st.subheader("📝 자막 (Subtitles)")
+    use_subtitles = st.checkbox("자막 포함 (Subtitles)", value=True) # 기본값은 켜짐
+    
     st.divider()
     num_scenes = st.slider("씬(Scene) 개수", 2, 8, 4)
     
@@ -403,25 +407,54 @@ def get_bgm_path(mood_key):
     """
     선택된 BGM 키에 해당하는 URL을 다운로드합니다.
     """
+    if not mood_key or mood_key == "🔇 없음 (Mute)":
+        return None
+    
     url = BGM_URLS.get(mood_key)
     if not url: return None
     
-    # 파일명 안전하게 변환
-    safe_name = "".join(x for x in mood_key if x.isalnum())
+    # [핵심 수정 1] 파일명에서 한글 제거 (괄호 안의 영어 키워드만 추출)
+    # 예: "🌞 어쿠스틱 / 브이로그 (Daily)" -> "Daily"
+    try:
+        if '(' in mood_key:
+            english_key = mood_key.split('(')[-1].replace(')', '').strip()
+        else:
+            english_key = "default"
+    except:
+        english_key = "bgm"
+        
+    # 영문/숫자만 남기기
+    safe_name = "".join(x for x in english_key if x.isalnum())
     filename = f"bgm_{safe_name}.mp3"
     filepath = os.path.join(tempfile.gettempdir(), filename)
     
+    # 캐싱 확인 및 유효성 검사
     if os.path.exists(filepath):
-        return filepath
+        # 파일이 있는데 크기가 너무 작으면(1KB 미만) 삭제하고 다시 받음
+        if os.path.getsize(filepath) < 1000:
+            os.remove(filepath)
+        else:
+            return filepath
         
     try:
+        # [핵심 수정 2] 다운로드 검증
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"❌ BGM 다운로드 실패(Status): {mood_key}")
+            return None
+            
+        # 내용이 HTML 에러페이지인지 확인 (크기 체크)
+        if len(response.content) < 1000:
+            print(f"❌ BGM 파일 손상(Too small): {mood_key}")
+            return None
+            
         with open(filepath, "wb") as f:
             f.write(response.content)
         return filepath
     except Exception as e:
-        print(f"BGM 다운로드 실패: {e}")
+        print(f"❌ BGM 네트워크 오류: {e}")
         return None
 
 def get_sfx_path(sfx_name):
@@ -946,9 +979,10 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 try:
                     scene_final_clip = scene_final_clip.set_audio(audio_clip)
                     
-                    subtitle_clip = create_subtitle_clip(scene['narrative'], scene_final_clip.duration, korean_font_path)
-                    if subtitle_clip:
-                        scene_final_clip = CompositeVideoClip([scene_final_clip, subtitle_clip])
+                    if use_subtitles:
+                        subtitle_clip = create_subtitle_clip(scene['narrative'], scene_final_clip.duration, korean_font_path)
+                        if subtitle_clip:
+                            scene_final_clip = CompositeVideoClip([scene_final_clip, subtitle_clip])
                     
                     scene_final_clip = scene_final_clip.fadein(0.5)
                     generated_clips.append(scene_final_clip)
