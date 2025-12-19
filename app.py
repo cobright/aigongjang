@@ -304,58 +304,72 @@ def generate_script_json(topic, num_scenes, genre_key):
 
 def generate_image_google(prompt, filename, ref_image_path=None):
     """
-    [Image] Gemini 3 Pro Image: 레퍼런스 이미지를 활용한 캐릭터 고정
+    [Stabilized] Gemini 3 Pro Image: 503 과부하 에러 시 자동 재시도(Retry) 로직 추가
     """
     if not gemini_key: return None
     
     output_path = os.path.join(tempfile.gettempdir(), filename)
 
-    try:
-        client = genai.Client(api_key=gemini_key)
-        # 검색 결과에 따른 최신 모델명 (2025년 기준)
-        model_id = "gemini-3-pro-image-preview"
+    # [설정] 최대 재시도 횟수 및 대기 시간
+    max_retries = 3 
+    
+    client = genai.Client(api_key=gemini_key)
+    
+    # 1. 모델 우선순위 설정
+    # 3-pro가 503이 너무 심하면 2.0-flash로 대체 가능하지만, 일단 3-pro 재시도 시도
+    model_id = "gemini-3-pro-image-preview" # 3.0이 너무 불안정하면 이걸로 변경하세요 (현재 더 안정적)
+    # model_id = "gemini-3-pro-image-preview" 
 
-        # 1. 프롬프트 구성 (텍스트)
-        # 캐릭터 일관성을 위해 'Consistent character' 키워드 강조
-        contents_parts = [types.Part.from_text(text=prompt + ", consistent character identity, high fidelity")]
+    for attempt in range(max_retries):
+        try:
+            # 1. 프롬프트 구성 (텍스트)
+            contents_parts = [types.Part.from_text(text=prompt + ", consistent character identity, high fidelity")]
 
-        # 2. 레퍼런스 이미지 추가 (핵심 기능)
-        # 만약 참조 이미지가 있다면, 프롬프트와 함께 AI에게 보여줍니다.
-        if ref_image_path and os.path.exists(ref_image_path):
-            with open(ref_image_path, "rb") as f:
-                img_data = f.read()
-                # 텍스트 + 이미지를 멀티모달 입력으로 전달
-                contents_parts.append(types.Part.from_bytes(data=img_data, mime_type="image/png"))
+            # 2. 레퍼런스 이미지 추가
+            if ref_image_path and os.path.exists(ref_image_path):
+                with open(ref_image_path, "rb") as f:
+                    img_data = f.read()
+                    contents_parts.append(types.Part.from_bytes(data=img_data, mime_type="image/png"))
 
-        contents = [types.Content(role="user", parts=contents_parts)]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(image_size="1K"), # 1024x1024
-        )
+            contents = [types.Content(role="user", parts=contents_parts)]
+            
+            generate_content_config = types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+                image_config=types.ImageConfig(image_size="1K"),
+            )
+            
+            # API 요청
+            response = client.models.generate_content(
+                model=model_id,
+                contents=contents,
+                config=generate_content_config,
+            )
+            
+            if response.candidates and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if part.inline_data and part.inline_data.data:
+                        with open(output_path, "wb") as f:
+                            f.write(part.inline_data.data)
+                        return output_path
+            
+            # 여기까지 왔는데 리턴이 안 됐다면 뭔가 이상한 것
+            return None
 
-        response = client.models.generate_content(
-            model=model_id,
-            contents=contents,
-            config=generate_content_config,
-        )
-        
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.inline_data and part.inline_data.data:
-                    with open(output_path, "wb") as f:
-                        f.write(part.inline_data.data)
-                    return output_path
-        
-        return None
-
-    except Exception as e:
-        # Gemini 3 모델이 아직 배포되지 않은 리전일 경우 안전장치
-        if "404" in str(e) or "not found" in str(e).lower():
-            st.warning("⚠️ Gemini 3 모델을 찾을 수 없어 2.0 Flash로 대체합니다.")
-            # (여기에 기존 generate_image_google 로직의 Fallback 코드를 넣거나 재귀 호출 가능)
-        st.warning(f"이미지 생성 오류: {e}")
-        return None
+        except Exception as e:
+            error_msg = str(e)
+            # 503(과부하) 또는 429(너무 많은 요청) 에러인 경우
+            if "503" in error_msg or "429" in error_msg:
+                wait_time = (attempt + 1) * 3 # 1회차: 3초, 2회차: 6초 대기
+                print(f"⚠️ 서버 과부하(503). {wait_time}초 후 재시도합니다... ({attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+                continue # 다시 루프의 처음으로
+            else:
+                # 다른 치명적인 에러면 그냥 종료
+                st.warning(f"이미지 생성 오류(중단): {e}")
+                return None
+    
+    st.error("❌ 3번 재시도했으나 서버 응답이 없습니다. 나중에 다시 시도해주세요.")
+    return None
 
 def generate_audio(text, filename, voice_name="ko-KR-Standard-C"):
     """
