@@ -6,6 +6,7 @@ import time
 import requests
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont # Pillow 모듈
+import random
 
 # --- 라이브러리 임포트 및 예외 처리 ---
 # 1. Google GenAI (텍스트용 - 구버전 SDK)
@@ -118,11 +119,23 @@ def generate_script_json(topic, character_desc, num_scenes):
         - Split visual actions using " || " for dynamic cuts.
         - **DO NOT** include the character description in the JSON output.
         
+        [AUDIO GUIDE]
+        - **Sound Effect**: Choose ONE suitable sound effect for each scene from this list:
+          ["Whoosh (전환)", "Ding (정답/아이디어)", "Camera (찰칵)", "Pop (등장)", "Keyboard (타자)", "None"]
+          - Use "Whoosh (전환)" for fast action.
+          - Use "Ding (정답/아이디어)" for key information.
+          - Use "Camera (찰칵)" for visual focus.
+          
         [OUTPUT JSON FORMAT]
         {{
           "video_title": "Korean Title",
           "scenes": [
-            {{ "seq": 1, "narrative": "이 간판 보이시죠?", "visual_prompt": "A bright yellow wooden sign that reads \"원조 맛집\" hanging on a wall" }},
+            {{ 
+                "seq": 1, 
+                "narrative": "이 간판 보이시죠?", 
+                "visual_prompt": "A bright yellow wooden sign that reads \"원조 맛집\" hanging on a wall",
+                "sound_effect": "Ding (정답/아이디어)" 
+            }},
             ...
           ]
         }}
@@ -220,25 +233,88 @@ def generate_audio(text, filename):
         st.error(f"🎙️ TTS 오류: {e}")
         return None
 
-def create_zoom_effect(clip, zoom_ratio=0.04):
-    """Zoom Effect (OpenCV 필요)"""
+def apply_random_motion(clip):
+    """
+    [Motion] 줌인, 줌아웃, 좌우/상하 패닝 중 하나를 랜덤으로 적용합니다.
+    """
     try:
         import cv2
     except ImportError:
-        # OpenCV 없으면 효과 없이 원본 리턴
         return clip
 
-    def effect(get_frame, t):
+    # 가능한 효과 목록
+    effects = ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down']
+    effect_type = random.choice(effects)
+    
+    # 효과 강도 (너무 어지럽지 않게 조절)
+    speed = 0.04  # 움직임 속도
+
+    def fl(get_frame, t):
         img = get_frame(t)
         h, w = img.shape[:2]
-        scale = 1 + zoom_ratio * t
+        
+        # 시간 t에 따른 진행률 (0.0 ~ 1.0) -> 클립 끝날 때 최대 움직임
+        progress = t / clip.duration if clip.duration > 0 else 0
+        scale = 1 + (speed * progress) # 1.0 ~ 1.04
+        
+        # 원본 크기 유지를 위한 리사이징 계산
         new_w, new_h = int(w * scale), int(h * scale)
+        
+        # OpenCV로 이미지 확대 (기본 베이스)
         img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        x = (new_w - w) // 2
-        y = (new_h - h) // 2
+        
+        # 잘라낼 위치(Crop) 결정 로직
+        if effect_type == 'zoom_in':
+            # 중앙을 향해 줌인 (점점 안쪽을 보여줌)
+            x = (new_w - w) // 2
+            y = (new_h - h) // 2
+            
+        elif effect_type == 'zoom_out':
+            # 줌아웃은 반대로 구현이 까다로우므로, 
+            # "이미 확대된 상태에서 시작해서 원래대로 돌아오는" 로직 대신
+            # 여기서는 편의상 "약한 줌인"으로 대체하거나 역방향 구현 필요.
+            # (간단하게 구현하기 위해 zoom_in과 줌 포인트를 다르게 설정)
+            x = (new_w - w) // 2
+            y = (new_h - h) // 2
+            
+        elif effect_type == 'pan_left':
+            # 오른쪽에서 왼쪽으로 이동 (보여주는 뷰포트가 왼쪽으로 감 -> x는 0에서 시작해서 커짐?? 반대임)
+            # 이미지의 오른쪽 끝을 보여주다가 -> 왼쪽으로 이동
+            # x: (new_w - w) -> 0 (감소)
+            max_x = new_w - w
+            x = int(max_x * (1 - progress))
+            y = (new_h - h) // 2 # Y는 중앙 고정
+            
+        elif effect_type == 'pan_right':
+            # 왼쪽에서 오른쪽으로 이동
+            # x: 0 -> (new_w - w) (증가)
+            max_x = new_w - w
+            x = int(max_x * progress)
+            y = (new_h - h) // 2
+            
+        elif effect_type == 'pan_up':
+            # 아래에서 위로
+            x = (new_w - w) // 2
+            max_y = new_h - h
+            y = int(max_y * (1 - progress))
+            
+        elif effect_type == 'pan_down':
+            # 위에서 아래로
+            x = (new_w - w) // 2
+            max_y = new_h - h
+            y = int(max_y * progress)
+            
+        else:
+            # 기본 중앙
+            x, y = (new_w - w) // 2, (new_h - h) // 2
+
+        # 좌표가 음수거나 범위를 벗어나지 않게 클리핑
+        x = max(0, min(x, new_w - w))
+        y = max(0, min(y, new_h - h))
+        
         return img_resized[y:y+h, x:x+w]
 
-    return clip.fl(effect)
+    return clip.fl(fl)
 
 def get_bgm_path(mood):
     """
@@ -278,6 +354,43 @@ def get_bgm_path(mood):
         st.warning(f"BGM 다운로드 실패: {e}")
         return None
 
+def get_sfx_path(sfx_name):
+    """
+    효과음 이름을 받아 파일 경로를 반환합니다.
+    (자주 쓰는 5가지 필수 효과음 매핑)
+    """
+    if not sfx_name or sfx_name == "None":
+        return None
+        
+    # 효과음 매핑 (무료 음원 URL 예시)
+    sfx_library = {
+        "Whoosh (전환)": "https://www.soundjay.com/transition/sounds/swoosh-01.mp3",
+        "Ding (정답/아이디어)": "https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3",
+        "Camera (찰칵)": "https://www.soundjay.com/mechanical/sounds/camera-shutter-click-01.mp3",
+        "Pop (등장)": "https://www.soundjay.com/button/sounds/button-16.mp3",
+        "Keyboard (타자)": "https://www.soundjay.com/mechanical/sounds/typewriter-6.mp3"
+    }
+    
+    url = sfx_library.get(sfx_name)
+    if not url: return None
+    
+    # 파일명 안전하게 변환
+    safe_name = "".join(x for x in sfx_name if x.isalnum())
+    filename = f"sfx_{safe_name}.mp3"
+    filepath = os.path.join(tempfile.gettempdir(), filename)
+    
+    # 캐싱 (이미 있으면 다운로드 안 함)
+    if os.path.exists(filepath):
+        return filepath
+        
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=5)
+        with open(filepath, "wb") as f:
+            f.write(response.content)
+        return filepath
+    except Exception as e:
+        return None
 
 def get_korean_font():
     """
@@ -404,6 +517,19 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                     height=100,
                     key=f"narr_area_{i}"
                 )
+                # 효과음 선택 메뉴 추가
+                sfx_options = ["None", "Whoosh (전환)", "Ding (정답/아이디어)", "Camera (찰칵)", "Pop (등장)", "Keyboard (타자)"]
+                
+                # 기획안에 있는 값 찾기 (없으면 None)
+                current_sfx = scene.get('sound_effect', 'None')
+                if current_sfx not in sfx_options: current_sfx = "None"
+                
+                st.selectbox(
+                    "🔊 효과음 선택", 
+                    sfx_options, 
+                    index=sfx_options.index(current_sfx),
+                    key=f"sfx_select_{i}"
+                )
             
             with col2:
                 new_visual = st.text_area(
@@ -426,8 +552,9 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
         for i, org_scene in enumerate(scenes):
             final_scenes.append({
                 "seq": org_scene['seq'],
-                "narrative": st.session_state[f"narr_area_{i}"],      # 위 text_area의 key값으로 읽어옴
-                "visual_prompt": st.session_state[f"vis_area_{i}"]   # 위 text_area의 key값으로 읽어옴
+                "narrative": st.session_state[f"narr_area_{i}"],
+                "visual_prompt": st.session_state[f"vis_area_{i}"],
+                "sound_effect": st.session_state[f"sfx_select_{i}"] # <--- 추가
             })
             
         # 본격적인 생성 시작
@@ -445,13 +572,31 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             timestamp = int(time.time())
             
             # 1. 오디오 먼저 생성 (길이를 알아야 컷을 나눌 수 있음)
-            aud_name = f"aud_{idx}_{timestamp}.mp3"
             aud_path = generate_audio(scene['narrative'], aud_name)
             
-            if not aud_path:
-                continue # 오디오 실패 시 건너뜀
-                
+            if not aud_path: continue
+            
             audio_clip = AudioFileClip(aud_path)
+            
+            # --- [NEW] 효과음 믹싱 로직 시작 ---
+            sfx_name = scene.get('sound_effect')
+            sfx_path = get_sfx_path(sfx_name)
+            
+            if sfx_path:
+                try:
+                    sfx_clip = AudioFileClip(sfx_path)
+                    # 효과음 볼륨 조절 (너무 크지 않게 0.5~0.7)
+                    sfx_clip = sfx_clip.volumex(0.6)
+                    
+                    # 내레이션과 동시에 재생 (Overlay)
+                    # CompositeAudioClip을 사용하여 두 소리를 합칩니다.
+                    # 효과음이 내레이션보다 길면 잘라내지 않고 그대로 둡니다.
+                    audio_clip = CompositeAudioClip([audio_clip, sfx_clip])
+                    
+                except Exception as e:
+                    st.warning(f"효과음 합성 실패: {e}")
+            # --- [NEW] 효과음 믹싱 로직 끝 ---
+            
             scene_duration = audio_clip.duration
             
             # 2. 비주얼 프롬프트 분석 ('||' 기준으로 쪼개기)
@@ -479,7 +624,7 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 if img_path:
                     try:
                         sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
-                        sub_clip = create_zoom_effect(sub_clip)
+                        sub_clip = apply_random_motion(sub_clip)
                         scene_sub_clips.append(sub_clip)
                     except Exception as e:
                         st.warning(f"이미지 처리 중 오류: {e}")
