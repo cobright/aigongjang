@@ -141,7 +141,20 @@ with st.sidebar:
         st.success("✅ Pexels API: Connected")
         
     st.divider()
+    # (사이드바 맨 위쪽, 주제 입력하는 곳 근처 혹은 설정 시작 부분)
+    st.header("🎬 기획 설정")
     
+    # [NEW] 장르 선택 메뉴
+    selected_genre = st.selectbox(
+        "영상 장르 (Genre)", 
+        list(GENRE_SETTINGS.keys()), 
+        index=0
+    )
+    
+    # (선택된 장르에 대한 설명 표시 - 팁)
+    st.info(f"💡 특징: {GENRE_SETTINGS[selected_genre]['tone']}")
+    
+    st.divider()
     # [1] 주인공 페르소나 (4단 조립)
     st.subheader("👤 주인공 (Persona)")
     with st.expander("캐릭터 상세 설정 열기", expanded=True):
@@ -186,70 +199,93 @@ with st.sidebar:
     
 
 # --- 2. 핵심 모듈 함수 ---
-def generate_script_json(topic, character_desc, num_scenes):
+def generate_script_json(topic, num_scenes, genre_key):
     """
-    [Text] Gemini: 한글 텍스트 렌더링 규칙 추가
+    [Final Fix] 2025년 최신 모델(Gemini 2.5 Flash) 적용으로 404 오류 해결
     """
-    if not gemini_key: return None
+    if not gemini_key: 
+        st.error("API 키가 없습니다.")
+        return None
+    
+    settings = GENRE_SETTINGS.get(genre_key, GENRE_SETTINGS["📰 정보/뉴스 (Info)"])
     
     try:
-        genai_old.configure(api_key=gemini_key)
-        model = genai_old.GenerativeModel('gemini-2.5-flash') 
+        # 신버전 SDK 클라이언트 (google-genai)
+        client = genai.Client(api_key=gemini_key)
         
-        prompt = f"""
-        You are a YouTube Shorts Director. Create a script for: '{topic}'
+        # [핵심 수정] 2025년 12월 기준 현역 모델: 'gemini-2.5-flash'
+        # (구형 1.5 모델은 이미 종료되었을 수 있음)
+        model_id = "gemini-2.5-flash"
+        
+        prompt_text = f"""
+        You are a {settings['persona']} specialized in creating viral YouTube Shorts.
+        Create a script for the topic: '{topic}'
+        
+        [GENRE SPECIFIC RULES]
+        - **Genre**: {genre_key}
+        - **Tone**: {settings['tone']}
+        - **Structure Strategy**: Follow {settings['structure']}
+        - **Length Constraint**: Keep the Korean narrative STRICTLY under **{settings['max_chars']} characters** (including spaces). This is critical for video pacing.
         
         [CONSTRAINT - SCENE COUNT]
-        You must generate **EXACTLY {num_scenes} scenes**.
+        Generate exactly {num_scenes} scenes.
         
         [LANGUAGE RULES]
-        1. "narrative": **KOREAN (한국어)**. Casual spoken style.
-        2. "visual_prompt": **ENGLISH (영어)** for descriptions.
-        3. **[CRITICAL] KOREAN TEXT IN IMAGE**: 
-           - If a scene needs specific text (e.g., a signboard, a letter, a phone screen), describe the object in English but write the **text content in KOREAN inside double quotes**.
-           - Format: `Object description ..., text reads "한국어 내용", style ...`
-           - Example: `A neon sign on a dark street that says "라면 맛집" || A hand holding a smartphone showing a message "입금 완료"`
+        1. "narrative": **KOREAN (한국어)**. Style must match the Tone ({settings['tone']}).
+        2. "visual_prompt": **KOREAN (한국어)**.
+        3. **Visual Strategy**:
+           - If the genre is 'Review' or 'Info', focus on showing the object/fact clearly.
+           - If the genre is 'Story' or 'Motivation', focus on facial expressions and atmosphere.
+           - Use `[VIDEO] keyword` for generic scenes (Sky, City, Coffee).
         
-        [CONTENT GUIDE]
-        - **DYNAMIC MIX (Video vs Image)**: 
-          - Normally, write a description for AI Image generation.
-          - However, if the scene is generic (e.g., "Sky", "Traffic", "People walking", "Coffee"), use a STOCK VIDEO.
-          - To use a Stock Video, start the prompt with `[VIDEO]` followed by the keyword.
-          - Example 1: `[VIDEO] Time lapse of city traffic` (-> This will play a real video)
-          - Example 2: `[VIDEO] Ocean waves crashing`
-          - Example 3: `A close up of the character eating kimchi` (-> AI Image)          
-        - Split visual actions using " || " (Only for AI Images. Stock Video scenes should use single video).
-        
-        [AUDIO GUIDE]
-        - **Sound Effect**: Choose ONE suitable sound effect for each scene from this list:
-          ["Whoosh (전환)", "Ding (정답/아이디어)", "Camera (찰칵)", "Pop (등장)", "Keyboard (타자)", "None"]
-          - Use "Whoosh (전환)" for fast action.
-          - Use "Ding (정답/아이디어)" for key information.
-          - Use "Camera (찰칵)" for visual focus.
-          
         [OUTPUT JSON FORMAT]
         {{
-          "video_title": "Korean Title",
+          "video_title": "Title in Korean",
           "scenes": [
-            {{ 
-                "seq": 1, 
-                "narrative": "이 간판 보이시죠?", 
-                "visual_prompt": "A bright yellow wooden sign that reads \"원조 맛집\" hanging on a wall",
-                "sound_effect": "Ding (정답/아이디어)" 
-            }},
+            {{ "seq": 1, "narrative": "Korean script...", "visual_prompt": "Korean description..." }},
             ...
           ]
         }}
         """
         
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model=model_id,
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        
         text = response.text.strip()
-        if text.startswith("```json"): text = text[7:]
-        if text.endswith("```"): text = text[:-3]
-        return json.loads(text)
+        
+        # JSON 파싱
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start_idx = text.find('{')
+            end_idx = text.rfind('}') + 1
+            if start_idx != -1 and end_idx != -1:
+                return json.loads(text[start_idx:end_idx])
+            else:
+                st.error("JSON 파싱 실패: AI 응답 형식이 올바르지 않습니다.")
+                st.text(text)
+                return None
         
     except Exception as e:
-        st.error(f"기획 오류: {e}")
+        # 만약 2.5도 안 되면 2.0으로 자동 대체하는 2차 안전장치
+        if "404" in str(e):
+             st.warning(f"Gemini 2.5를 찾을 수 없어 2.0으로 재시도합니다.")
+             try:
+                response = client.models.generate_content(
+                    model="gemini-2.0-flash-exp",
+                    contents=prompt_text,
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                return json.loads(response.text.strip())
+             except:
+                 pass
+                 
+        st.error(f"기획 오류(Gemini 2.5): {e}")
         return None
 
 def generate_image_google(prompt, filename, ref_image_path=None):
@@ -811,8 +847,7 @@ if st.button("💡 1. 기획안(대본) 생성하기", type="primary", use_conta
         
     with st.spinner("🧠 Gemini가 기승전결(Hook-Body-CTA) 구조로 기획 중입니다..."):
         # 1단계에서 만든 구조화된 함수 호출
-        script_data = generate_script_json(topic, character_desc, num_scenes)
-        
+        script_data = generate_script_json(topic, num_scenes, selected_genre)
         if script_data:
             st.session_state["script_data"] = script_data
             st.session_state["step"] = 2
