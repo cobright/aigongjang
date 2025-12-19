@@ -3,6 +3,7 @@ import os
 import json
 import tempfile
 import time
+import requests
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont # Pillow 모듈
 
@@ -569,4 +570,5 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 st.video(output_path)
                 
             except Exception as e:
+
                 st.error(f"렌더링 오류: {e}")
