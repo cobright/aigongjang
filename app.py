@@ -807,7 +807,7 @@ st.header("Step 1. 기획안 작성")
 topic = st.text_input("영상 주제 (Topic)", placeholder="예: 집에서 만드는 스타벅스 돌체라떼 레시피")
 
 # [버튼 1] 기획안 생성
-if st.button("💡 1. 기획안(대본) 생성하기", type="primary", use_container_width=True):
+if st.button: #("💡 1. 기획안(대본) 생성하기", type="primary", use_container_width=True):
     if not topic:
             st.error("주제를 입력해주세요.")
     else:
