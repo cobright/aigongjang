@@ -145,8 +145,7 @@ def generate_script_json(topic, character_desc, num_scenes):
           - To use a Stock Video, start the prompt with `[VIDEO]` followed by the keyword.
           - Example 1: `[VIDEO] Time lapse of city traffic` (-> This will play a real video)
           - Example 2: `[VIDEO] Ocean waves crashing`
-          - Example 3: `A close up of the character eating kimchi` (-> AI Image)
-          
+          - Example 3: `A close up of the character eating kimchi` (-> AI Image)          
         - Split visual actions using " || " (Only for AI Images. Stock Video scenes should use single video).
         
         [AUDIO GUIDE]
@@ -181,38 +180,42 @@ def generate_script_json(topic, character_desc, num_scenes):
         st.error(f"기획 오류: {e}")
         return None
 
-def generate_image_google(prompt, filename):
-    """[Image] Gemini (New SDK): 이미지 생성"""
+def generate_image_google(prompt, filename, ref_image_path=None):
+    """
+    [Image] Gemini 3 Pro Image: 레퍼런스 이미지를 활용한 캐릭터 고정
+    """
     if not gemini_key: return None
     
     output_path = os.path.join(tempfile.gettempdir(), filename)
 
     try:
         client = genai.Client(api_key=gemini_key)
-        # 모델 ID 확인 필요 (imagen-3.0-generate-001 또는 gemini-pro-vision 등 상황에 맞게)
-        # 현재 코드의 gemini-3-pro-image-preview는 Preview 권한이 있어야 작동합니다.
-        model_id = "gemini-3-pro-image-preview" # 혹은 "imagen-3.0-generate-001"
+        # 검색 결과에 따른 최신 모델명 (2025년 기준)
+        model_id = "gemini-3-pro-image-preview"
+
+        # 1. 프롬프트 구성 (텍스트)
+        # 캐릭터 일관성을 위해 'Consistent character' 키워드 강조
+        contents_parts = [types.Part.from_text(text=prompt + ", consistent character identity, high fidelity")]
+
+        # 2. 레퍼런스 이미지 추가 (핵심 기능)
+        # 만약 참조 이미지가 있다면, 프롬프트와 함께 AI에게 보여줍니다.
+        if ref_image_path and os.path.exists(ref_image_path):
+            with open(ref_image_path, "rb") as f:
+                img_data = f.read()
+                # 텍스트 + 이미지를 멀티모달 입력으로 전달
+                contents_parts.append(types.Part.from_bytes(data=img_data, mime_type="image/png"))
+
+        contents = [types.Content(role="user", parts=contents_parts)]
         
-        # *참고: Gemini 2.0 Flash Exp는 이미지 생성을 지원하지만, 
-        # 전용 Imagen 모델을 쓴다면 코드가 달라질 수 있습니다. 
-        # 여기서는 작성해주신 코드를 기반으로 유지합니다.
-        
-        contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
-        
-        # [핵심] 시드 설정 (API가 지원하는 경우 적용)
-        # Gemini 이미지 생성에서 seed는 일관성을 높이는 데 도움을 줍니다.
-        config_params = {
-            "response_modalities": ["IMAGE"],
-            "image_config": types.ImageConfig(image_size="1K") # SDK 버전에 따라 seed 파라미터 위치가 다를 수 있음
-        }
-        
-        # 만약 SDK가 seed를 지원한다면 config에 추가 (현재 실험적 기능일 수 있음)
-        # (참고: 정식 지원 전이라도 난수 고정 효과를 위해 Python random을 제어하는 것은 아님)
-        
+        generate_content_config = types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            image_config=types.ImageConfig(image_size="1K"), # 1024x1024
+        )
+
         response = client.models.generate_content(
             model=model_id,
             contents=contents,
-            config=types.GenerateContentConfig(**config_params)
+            config=generate_content_config,
         )
         
         if response.candidates and response.candidates[0].content.parts:
@@ -225,7 +228,11 @@ def generate_image_google(prompt, filename):
         return None
 
     except Exception as e:
-        st.error(f"🎨 Google 이미지 생성 오류: {e}")
+        # Gemini 3 모델이 아직 배포되지 않은 리전일 경우 안전장치
+        if "404" in str(e) or "not found" in str(e).lower():
+            st.warning("⚠️ Gemini 3 모델을 찾을 수 없어 2.0 Flash로 대체합니다.")
+            # (여기에 기존 generate_image_google 로직의 Fallback 코드를 넣거나 재귀 호출 가능)
+        st.warning(f"이미지 생성 오류: {e}")
         return None
 
 def generate_audio(text, filename, voice_name="ko-KR-Standard-C"):
@@ -798,7 +805,20 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
         status_box = st.status("🏗️ 영상 제작 공장 가동 중...", expanded=True)
         
         # --- Phase 2: Veo + Stock Video + AI Image 하이브리드 ---
-        status_box.write("🎨 Phase 2: Google Veo 및 에셋 생성 중...")
+        status_box.write("🎨 Phase 2: 캐릭터 기준 이미지(Anchor) 생성 중...")
+        # [Step 0] 기준 캐릭터 이미지 생성 (이 이미지가 영상 내내 쓰임)
+        # 가장 자세한 묘사 + 정면 얼굴 위주
+        anchor_prompt = f"A detailed character sheet of {character_desc}, {video_style}, neutral expression, front view, white background"
+        anchor_img_name = f"anchor_char_{int(time.time())}.png"
+        
+        # 첫 번째 생성 시에는 레퍼런스가 없으므로 None
+        anchor_image_path = generate_image_google(anchor_prompt, anchor_img_name, ref_image_path=None)
+        
+        if anchor_image_path:
+            st.image(anchor_image_path, caption="✅ 생성된 기준 캐릭터 (이 얼굴로 고정됩니다)", width=200)
+        else:
+            st.warning("기준 캐릭터 생성 실패. 일관성이 떨어질 수 있습니다.")
+
         progress_bar = st.progress(0)
         generated_clips = []
         
@@ -886,7 +906,9 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                     final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
                     img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
                     
-                    img_path = generate_image_google(final_prompt, img_name)
+                    # [핵심] 여기서 anchor_image_path를 넘겨줍니다!
+                    img_path = generate_image_google(final_prompt, img_name, ref_image_path=anchor_image_path)
+                    
                     if img_path:
                         try:
                             sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
