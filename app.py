@@ -356,41 +356,56 @@ def get_bgm_path(mood):
 
 def get_sfx_path(sfx_name):
     """
-    효과음 이름을 받아 파일 경로를 반환합니다.
-    (자주 쓰는 5가지 필수 효과음 매핑)
+    [안전 버전] 효과음 다운로드 및 검증
     """
     if not sfx_name or sfx_name == "None":
         return None
         
-    # 효과음 매핑 (무료 음원 URL 예시)
+    # 1. 효과음 URL 매핑 (접근이 더 원활한 GitHub 소스 등으로 대체 권장)
+    # 아래는 예시용 URL이며, 실제 서비스시 본인의 S3나 호스팅 URL을 넣는 것이 가장 안전합니다.
     sfx_library = {
-        "Whoosh (전환)": "https://www.soundjay.com/transition/sounds/swoosh-01.mp3",
-        "Ding (정답/아이디어)": "https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3",
-        "Camera (찰칵)": "https://www.soundjay.com/mechanical/sounds/camera-shutter-click-01.mp3",
-        "Pop (등장)": "https://www.soundjay.com/button/sounds/button-16.mp3",
-        "Keyboard (타자)": "https://www.soundjay.com/mechanical/sounds/typewriter-6.mp3"
+        "Whoosh (전환)": "https://cdn.pixabay.com/download/audio/2022/03/24/audio_c8c8a73467.mp3", # Pixabay Free
+        "Ding (정답/아이디어)": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_736862b691.mp3",
+        "Camera (찰칵)": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c3d0b26f58.mp3",
+        "Pop (등장)": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c8c8a73467.mp3", # 임시 대체
+        "Keyboard (타자)": "https://cdn.pixabay.com/download/audio/2022/03/24/audio_823e8396d6.mp3"
     }
     
     url = sfx_library.get(sfx_name)
     if not url: return None
     
-    # 파일명 안전하게 변환
-    safe_name = "".join(x for x in sfx_name if x.isalnum())
+    # 2. 파일명 안전하게 변환 (한글 제거, 순수 영문/숫자만 남김)
+    # 예: "Pop (등장)" -> "Pop"
+    safe_key = sfx_name.split('(')[0].strip() # 괄호 앞부분만 가져옴
+    safe_name = "".join(x for x in safe_key if x.isalnum())
     filename = f"sfx_{safe_name}.mp3"
     filepath = os.path.join(tempfile.gettempdir(), filename)
     
-    # 캐싱 (이미 있으면 다운로드 안 함)
-    if os.path.exists(filepath):
-        return filepath
-        
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=5)
-        with open(filepath, "wb") as f:
-            f.write(response.content)
-        return filepath
-    except Exception as e:
-        return None
+    # 3. 캐싱 및 다운로드 검증
+    if not os.path.exists(filepath):
+        try:
+            # 타임아웃 3초 설정
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers, timeout=3)
+            
+            # (중요) 요청이 성공했는지 확인
+            if response.status_code != 200:
+                print(f"❌ 효과음 다운로드 실패(HTTP Error): {sfx_name}")
+                return None
+                
+            # (중요) 파일 내용이 너무 작으면(1KB 미만) 가짜 파일(HTML 에러페이지)일 확률 높음
+            if len(response.content) < 1000:
+                print(f"❌ 효과음 파일 손상 의심(Too small): {sfx_name}")
+                return None
+                
+            with open(filepath, "wb") as f:
+                f.write(response.content)
+                
+        except Exception as e:
+            print(f"❌ 효과음 네트워크 오류: {e}")
+            return None
+            
+    return filepath
 
 def get_korean_font():
     """
@@ -581,19 +596,29 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             
             audio_clip = AudioFileClip(aud_path)
             
-            # --- [NEW] 효과음 믹싱 로직 시작 ---
+            # --- [수정된 효과음 믹싱 로직] ---
             sfx_name = scene.get('sound_effect')
+            
+            # 다운로드 시도
             sfx_path = get_sfx_path(sfx_name)
             
-            if sfx_path:
+            if sfx_path and os.path.exists(sfx_path):
                 try:
+                    # 안전하게 로드 시도
                     sfx_clip = AudioFileClip(sfx_path)
-                    sfx_clip = sfx_clip.volumex(0.6)
-                    audio_clip = CompositeAudioClip([audio_clip, sfx_clip])
                     
+                    # 파일이 진짜 오디오인지 확인 (duration 체크)
+                    if sfx_clip.duration > 0:
+                        sfx_clip = sfx_clip.volumex(0.6)
+                        # 내레이션과 합성
+                        audio_clip = CompositeAudioClip([audio_clip, sfx_clip])
+                    else:
+                        print(f"⚠️ 효과음 파일 길이 0: {sfx_name}")
+                        
                 except Exception as e:
-                    st.warning(f"효과음 합성 실패: {e}")
-            # --- [NEW] 효과음 믹싱 로직 끝 ---
+                    # 여기서 에러가 나면 그냥 무시하고(pass) 내레이션만 진행
+                    print(f"⚠️ 효과음 합성 중 에러(무시됨): {e}")
+                    pass
             
             scene_duration = audio_clip.duration
             
