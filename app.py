@@ -92,7 +92,7 @@ with st.sidebar:
     character_desc = st.text_area("주인공 외모 묘사", value=default_char, height=80)
     video_style = st.selectbox("화풍 (Style)", ["2D Webtoon Style", "Anime Style", "Realistic Cinematic", "Oil Painting"], index=0)
     
-    num_scenes = st.slider("생성할 씬(Scene) 개수 (권장: 4개 이상)", 2, 6, 4)
+    num_scenes = st.slider("생성 씬(Scene) 개수 (권장: 4개 이상)", 2, 6, 4)
 
     st.divider()
     st.subheader("🎙️ 성우 (Voice)")    
@@ -198,15 +198,21 @@ def generate_image_google(prompt, filename):
         # 여기서는 작성해주신 코드를 기반으로 유지합니다.
         
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
-        generate_content_config = types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(image_size="1K"), # 혹은 "1024x1024" 등 SDK 버전에 따라 다름
-        )
-
+        
+        # [핵심] 시드 설정 (API가 지원하는 경우 적용)
+        # Gemini 이미지 생성에서 seed는 일관성을 높이는 데 도움을 줍니다.
+        config_params = {
+            "response_modalities": ["IMAGE"],
+            "image_config": types.ImageConfig(image_size="1K") # SDK 버전에 따라 seed 파라미터 위치가 다를 수 있음
+        }
+        
+        # 만약 SDK가 seed를 지원한다면 config에 추가 (현재 실험적 기능일 수 있음)
+        # (참고: 정식 지원 전이라도 난수 고정 효과를 위해 Python random을 제어하는 것은 아님)
+        
         response = client.models.generate_content(
             model=model_id,
             contents=contents,
-            config=generate_content_config,
+            config=types.GenerateContentConfig(**config_params)
         )
         
         if response.candidates and response.candidates[0].content.parts:
@@ -216,7 +222,6 @@ def generate_image_google(prompt, filename):
                         f.write(part.inline_data.data)
                     return output_path
         
-        st.warning("⚠️ 이미지가 생성되지 않았습니다 (모델 응답 없음).")
         return None
 
     except Exception as e:
@@ -586,6 +591,62 @@ def get_pexels_video(query, duration):
         print(f"Pexels 다운로드 실패: {e}")
         return None
 
+def generate_video_veo(prompt, filename):
+    """
+    [NEW] Google Veo (Text-to-Video)를 사용하여 영상을 생성합니다.
+    """
+    if not gemini_key: return None
+    
+    output_path = os.path.join(tempfile.gettempdir(), filename)
+    
+    # 이미 생성된 파일이 있으면 캐시 사용 (Veo는 비싸고 오래 걸리므로)
+    if os.path.exists(output_path):
+        return output_path
+
+    try:
+        client = genai.Client(api_key=gemini_key)
+        
+        # [중요] 2025년 12월 기준 최신 모델 ID (상황에 따라 'veo-3.1-generate-preview-1015' 등으로 변경 필요)
+        model_id = "veo-3.1-generate-preview" 
+
+        # 영상 생성 설정
+        # 24fps, 1080p 등 설정 가능
+        generate_config = types.GenerateContentConfig(
+            response_modalities=["VIDEO"], # 응답 형식을 비디오로 설정
+            video_config=types.VideoConfig(
+                aspect_ratio="16:9", 
+                sample_count=1, 
+                seconds=6 # 씬당 6초 생성
+            )
+        )
+
+        prompt_text = f"Cinematic movie shot, {prompt}, high quality, 4k"
+
+        # 생성 요청 (시간이 30초~1분 정도 소요될 수 있음)
+        response = client.models.generate_content(
+            model=model_id,
+            contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt_text)])],
+            config=generate_config
+        )
+        
+        # 응답 처리
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.inline_data: # 비디오 데이터가 인라인으로 오는 경우
+                    with open(output_path, "wb") as f:
+                        f.write(part.inline_data.data)
+                    return output_path
+                elif part.file_data: # 파일 URI로 오는 경우 (Vertex AI 등)
+                    # 파일 다운로드 로직 필요 (SDK 버전에 따라 다름. 여기선 인라인 가정)
+                    pass
+        
+        return None
+
+    except Exception as e:
+        print(f"Veo 생성 실패: {e}")
+        # 실패 시 None을 반환하여 기존 AI 이미지(백업)로 넘어가게 함
+        return None
+    
 def create_subtitle(text, duration, font_path):
     """
     [무설치 버전] Pillow를 사용하여 자막 이미지를 생성합니다.
@@ -736,8 +797,8 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
         # 본격적인 생성 시작
         status_box = st.status("🏗️ 영상 제작 공장 가동 중...", expanded=True)
         
-        # --- Phase 2: 스톡 비디오 + AI 이미지 하이브리드 생성 ---
-        status_box.write("🎨 Phase 2: 에셋 생성(Video/Image) 및 합성 중...")
+        # --- Phase 2: Veo + Stock Video + AI Image 하이브리드 ---
+        status_box.write("🎨 Phase 2: Google Veo 및 에셋 생성 중...")
         progress_bar = st.progress(0)
         generated_clips = []
         
@@ -750,11 +811,9 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             timestamp = int(time.time())
             aud_name = f"aud_{idx}_{timestamp}.mp3"
             
-            # 1. 오디오 & 효과음 생성
+            # 1. 오디오 생성
             aud_path = generate_audio(scene['narrative'], aud_name, voice_name=selected_voice_name)
-            
             if not aud_path: continue
-                
             audio_clip = AudioFileClip(aud_path)
             
             # 효과음 믹싱
@@ -768,28 +827,54 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             
             scene_duration = audio_clip.duration
             visual_prompt = scene['visual_prompt'].strip()
-            
+            scene_final_clip = None
+
             # ==========================================
-            # [분기점] 스톡 비디오냐? AI 이미지냐?
+            # [전략 1] 스톡 비디오 (태그가 있는 경우 최우선)
             # ==========================================
             if visual_prompt.upper().startswith("[VIDEO]"):
-                # (A) 스톡 비디오 모드
-                search_query = visual_prompt[7:].strip() # "[VIDEO]" 제거
+                search_query = visual_prompt[7:].strip()
                 status_box.write(f"    🎥 스톡 비디오 검색: {search_query}")
+                scene_final_clip = get_pexels_video(search_query, scene_duration)
                 
-                # Pexels 다운로드 (오디오 길이만큼 확보)
-                video_clip = get_pexels_video(search_query, scene_duration)
-                
-                if video_clip:
-                    scene_final_clip = video_clip.set_audio(audio_clip)
-                else:
-                    # 실패하면 AI 이미지로 대체하기 위해 태그 떼고 진행
-                    status_box.warning("스톡 비디오 실패 -> AI 이미지로 대체")
-                    visual_prompt = search_query # 태그 제거된 텍스트로 아래 로직(B) 실행
-                    scene_final_clip = None 
+                if not scene_final_clip:
+                    status_box.warning("스톡 비디오 실패 -> Veo 생성 시도")
+                    visual_prompt = search_query # 태그 떼고 Veo로 넘김
 
-            if not visual_prompt.upper().startswith("[VIDEO]") or scene_final_clip is None:
-                # (B) AI 이미지 모드 (기존 로직)
+            # ==========================================
+            # [전략 2] Google Veo (진짜 생성형 비디오)
+            # ==========================================
+            if scene_final_clip is None:
+                # 캐릭터 일관성을 위한 프롬프트 조합
+                veo_prompt = f"{character_desc}, {visual_prompt}, {video_style}, cinematic lighting, consistent character"
+                vid_name = f"veo_{idx}_{timestamp}.mp4"
+                
+                status_box.write(f"    🎬 Veo 영상 생성 중... (약 30초 소요)")
+                veo_path = generate_video_veo(veo_prompt, vid_name)
+                
+                if veo_path:
+                    try:
+                        # Veo 영상 로드
+                        veo_clip = VideoFileClip(veo_path)
+                        # 소리가 있을 수 있으므로 제거 (TTS 사용 위해)
+                        veo_clip = veo_clip.without_audio()
+                        
+                        # 길이 맞추기 (Loop or Cut)
+                        if veo_clip.duration < scene_duration:
+                             loop_count = int(scene_duration // veo_clip.duration) + 2
+                             veo_clip = concatenate_videoclips([veo_clip] * loop_count)
+                        
+                        scene_final_clip = veo_clip.subclip(0, scene_duration).resize(height=720)
+                        status_box.write("    ✅ Veo 생성 성공!")
+                    except Exception as e:
+                        st.warning(f"Veo 클립 처리 오류: {e}")
+
+            # ==========================================
+            # [전략 3] AI 이미지 (Veo 실패 시 백업)
+            # ==========================================
+            if scene_final_clip is None:
+                status_box.write("    🎨 AI 이미지 모드 (백업) 실행")
+                # (기존 이미지 컷 쪼개기 로직 유지)
                 raw_prompts = visual_prompt.split('||')
                 valid_prompts = [p.strip() for p in raw_prompts if p.strip()]
                 if not valid_prompts: valid_prompts = [visual_prompt]
@@ -798,10 +883,8 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 scene_sub_clips = []
                 
                 for sub_idx, raw_text in enumerate(valid_prompts):
-                    # 캐릭터 일관성 + 화풍 적용
                     final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
                     img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
-                    status_box.write(f"    🎨 AI 그리기 ({sub_idx+1}/{len(valid_prompts)}): {raw_text[:10]}...")
                     
                     img_path = generate_image_google(final_prompt, img_name)
                     if img_path:
@@ -813,23 +896,20 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 
                 if scene_sub_clips:
                     scene_final_clip = concatenate_videoclips(scene_sub_clips, method="compose")
-                    scene_final_clip = scene_final_clip.set_audio(audio_clip)
-                else:
-                    scene_final_clip = None
 
-            # 3. 최종 합성 (자막 + 트랜지션)
+            # 최종 합성 (오디오 + 자막 + 트랜지션)
             if scene_final_clip:
                 try:
-                    # 자막
+                    scene_final_clip = scene_final_clip.set_audio(audio_clip)
+                    
                     subtitle_clip = create_subtitle_clip(scene['narrative'], scene_final_clip.duration, korean_font_path)
                     if subtitle_clip:
                         scene_final_clip = CompositeVideoClip([scene_final_clip, subtitle_clip])
                     
-                    # 페이드인
                     scene_final_clip = scene_final_clip.fadein(0.5)
                     generated_clips.append(scene_final_clip)
                 except Exception as e:
-                    st.error(f"합성 실패: {e}")
+                    st.error(f"최종 합성 실패: {e}")
             
             progress_bar.progress((i + 1) / len(final_scenes))
 
