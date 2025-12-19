@@ -41,6 +41,29 @@ try:
 except ImportError:
     pass
 
+# --- [데이터 사전] 화풍 및 BGM 매핑 ---
+
+# 1. 화풍 (Style) 매핑: 사용자가 선택하면 -> 전문 프롬프트로 변환
+STYLE_PROMPTS = {
+    "📸 실사: 시네마틱 (Cinematic)": "Cinematic shot, 4k, hyper-realistic, shallow depth of field, dramatic lighting, shot on Sony A7R",
+    "📸 실사: 인스타 감성 (Aesthetic)": "Polaroid style, film grain, soft natural lighting, candid shot, aesthetic, VSCO filter",
+    "🎨 2D: 웹툰/만화 (Webtoon)": "Korean webtoon style, cel shaded, vibrant colors, clean lines, anime style, manhwa",
+    "🎨 3D: 픽사 스타일 (3D Animation)": "Disney Pixar style 3D render, cute, soft texture, volumetric lighting, Unreal Engine 5",
+    "🖌️ 예술: 수채화 (Watercolor)": "Watercolor painting, soft brush strokes, pastel colors, artistic, dreamy",
+    "🌃 사이버펑크 (Cyberpunk)": "Cyberpunk, neon lights, futuristic, dark atmosphere, glowing effects"
+}
+
+# 2. BGM 매핑: 사용자가 선택하면 -> 무료 음원 URL로 변환
+# (실제 운영 시에는 저작권 확인된 S3 링크나 Pexels/Youtube Audio Library 파일 권장)
+BGM_URLS = {
+    "🔇 없음 (Mute)": None,
+    "☕ Lo-fi / 칠합 (Study)": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3",
+    "🌞 어쿠스틱 / 브이로그 (Daily)": "https://cdn.pixabay.com/download/audio/2022/03/24/audio_c8c8a73467.mp3", # 임시 URL (실제론 다른 파일 추천)
+    "🏢 코퍼레이트 / 뉴스 (Info)": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c3d0b26f58.mp3",
+    "🎬 시네마틱 / 웅장함 (Epic)": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_736862b691.mp3",
+    "🤪 펑키 / 예능 (Fun)": "https://cdn.pixabay.com/download/audio/2022/03/24/audio_823e8396d6.mp3"
+}
+
 # --- 1. 환경 및 UI 설정 ---
 st.set_page_config(page_title="AI 영상 공장 (Google Edition)", page_icon="🍌", layout="wide")
 st.title("🍌 AI 영상 공장 (Gemini 3 Pro Image)")
@@ -57,7 +80,7 @@ def get_secret(key_name):
 
 # 사이드바 설정
 with st.sidebar:
-    st.header("⚙️ 시스템 제어기")
+    st.header("⚙️ 스튜디오 설정")
     
     gemini_key = get_secret("GOOGLE_API_KEY")
     tts_key_path = get_secret("GOOGLE_APPLICATION_CREDENTIALS") # 로컬 파일 경로
@@ -84,34 +107,46 @@ with st.sidebar:
         # 이미 환경변수에 있으면 성공 표시
         st.success("✅ Pexels API: Connected")
         
-    
     st.divider()
     
-    st.subheader("🖼️ 캐릭터 설정")
-    default_char = "A young Korean office worker in a suit, simple clean lines, distinct facial features"
-    character_desc = st.text_area("주인공 외모 묘사", value=default_char, height=80)
-    video_style = st.selectbox("화풍 (Style)", ["2D Webtoon Style", "Anime Style", "Realistic Cinematic", "Oil Painting"], index=0)
-    
-    num_scenes = st.slider("생성 씬(Scene) 개수 (권장: 4개 이상)", 2, 6, 4)
+    # [1] 주인공 페르소나 (4단 조립)
+    st.subheader("👤 주인공 (Persona)")
+    with st.expander("캐릭터 상세 설정 열기", expanded=True):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            char_age_gender = st.text_input("나이/성별/인종", value="20대 한국인 남성")
+            char_outfit = st.text_input("의상 스타일", value="네이비 정장, 파란 넥타이")
+        with col_b:
+            char_hair = st.text_input("헤어/얼굴 특징", value="짧은 검은 머리, 안경")
+            char_signature = st.text_input("시그니처 아이템", value="스마트워치")
+            
+        # 조립된 캐릭터 묘사 (이 변수가 AI에게 전달됨)
+        character_desc = f"{char_age_gender}, {char_hair}, wearing {char_outfit}. Distinctive feature: {char_signature}"
+        st.caption(f"📝 조합 결과: {character_desc}")
 
-    st.divider()
-    st.subheader("🎙️ 성우 (Voice)")    
-    voice_options = {
-        "👨‍💼 남성 (차분한 - 기본)": "ko-KR-Standard-C",
-        "👩‍💼 여성 (차분한 - 뉴스)": "ko-KR-Standard-A",
-        "👧 여성 (발랄한 - 예능)": "ko-KR-Standard-B",
-        "👨 남성 (중저음 - 다큐)": "ko-KR-Standard-D"
-    }
+    # [2] 화풍 (Dictionary 활용)
+    st.subheader("🎨 화풍 (Style)")
+    selected_style_key = st.selectbox("스타일 선택", list(STYLE_PROMPTS.keys()), index=2)
+    video_style = STYLE_PROMPTS[selected_style_key] # 실제 프롬프트로 변환
     
-    selected_voice_label = st.selectbox("내레이터 선택", list(voice_options.keys()), index=0)
+    # [3] 성우 (기존 유지)
+    st.subheader("🎙️ 성우 (Voice)")
+    voice_options = {
+        "👨‍💼 남성 (차분한)": "ko-KR-Standard-C",
+        "👩‍💼 여성 (차분한)": "ko-KR-Standard-A",
+        "👧 여성 (발랄한)": "ko-KR-Standard-B",
+        "👨 남성 (중저음)": "ko-KR-Standard-D"
+    }
+    selected_voice_label = st.selectbox("내레이터", list(voice_options.keys()), index=0)
     selected_voice_name = voice_options[selected_voice_label]
-    st.divider()
+
+    # [4] BGM (Dictionary 활용)
     st.subheader("🎵 배경음악 (BGM)")
-    bgm_mood = st.selectbox(
-        "분위기 선택", 
-        ["🌞 밝고 경쾌한 (Bright)", "☕ 차분한 (Calm)", "🔥 박진감 넘치는 (Epic)", "🔇 없음 (Mute)"],
-        index=0
-    )
+    bgm_mood = st.selectbox("분위기 선택", list(BGM_URLS.keys()), index=1)
+    
+    st.divider()
+    num_scenes = st.slider("씬(Scene) 개수", 2, 8, 4)
+    
 
 # --- 2. 핵심 모듈 함수 ---
 def generate_script_json(topic, character_desc, num_scenes):
@@ -364,42 +399,29 @@ def apply_random_motion(clip):
 
     return clip.fl(fl)
 
-def get_bgm_path(mood):
+def get_bgm_path(mood_key):
     """
-    선택된 분위기(mood)에 맞는 무료 BGM을 다운로드하여 경로를 반환합니다.
-    (저작권 무료 음원: Kevin MacLeod 등 Open Source 활용)
+    선택된 BGM 키에 해당하는 URL을 다운로드합니다.
     """
-    if mood == "🔇 없음 (Mute)":
-        return None
-        
-    # 분위기별 음원 URL (안정적인 GitHub Raw 소스 등을 사용하는 것이 좋으나, 예시로 무료 음원 링크 사용)
-    # 실제 운영 시에는 본인의 서버나 S3 링크로 교체하는 것을 권장합니다.
-    bgm_urls = {
-        "🌞 밝고 경쾌한 (Bright)": "https://www.bensound.com/bensound-music/bensound-ukulele.mp3", # 예시 URL
-        "☕ 차분한 (Calm)": "https://www.bensound.com/bensound-music/bensound-slowmotion.mp3", 
-        "🔥 박진감 넘치는 (Epic)": "https://www.bensound.com/bensound-music/bensound-evolution.mp3"
-    }
-    
-    url = bgm_urls.get(mood)
+    url = BGM_URLS.get(mood_key)
     if not url: return None
     
-    # 임시 파일명 (분위기별로 캐싱)
-    filename = f"bgm_{mood[:2]}.mp3"
+    # 파일명 안전하게 변환
+    safe_name = "".join(x for x in mood_key if x.isalnum())
+    filename = f"bgm_{safe_name}.mp3"
     filepath = os.path.join(tempfile.gettempdir(), filename)
     
-    # 이미 다운로드 받은 파일이 있으면 재사용 (속도 향상)
     if os.path.exists(filepath):
         return filepath
         
     try:
-        # User-Agent 헤더 추가 (차단 방지)
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
         with open(filepath, "wb") as f:
             f.write(response.content)
         return filepath
     except Exception as e:
-        st.warning(f"BGM 다운로드 실패: {e}")
+        print(f"BGM 다운로드 실패: {e}")
         return None
 
 def get_sfx_path(sfx_name):
@@ -866,7 +888,7 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             # ==========================================
             if scene_final_clip is None:
                 # 캐릭터 일관성을 위한 프롬프트 조합
-                veo_prompt = f"{character_desc}, {visual_prompt}, {video_style}, cinematic lighting, consistent character"
+                veo_prompt = f"{character_desc}, {visual_prompt}, {video_style}, consistent character"
                 vid_name = f"veo_{idx}_{timestamp}.mp4"
                 
                 status_box.write(f"    🎬 Veo 영상 생성 중... (약 30초 소요)")
@@ -903,7 +925,7 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 scene_sub_clips = []
                 
                 for sub_idx, raw_text in enumerate(valid_prompts):
-                    final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
+                    final_prompt = f"{character_desc}, {raw_text}, {video_style}"
                     img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
                     
                     # [핵심] 여기서 anchor_image_path를 넘겨줍니다!
