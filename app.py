@@ -571,6 +571,9 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             
             timestamp = int(time.time())
             
+            # [수정] 변수 정의가 먼저 있어야 합니다!
+            aud_name = f"aud_{idx}_{timestamp}.mp3"
+
             # 1. 오디오 먼저 생성 (길이를 알아야 컷을 나눌 수 있음)
             aud_path = generate_audio(scene['narrative'], aud_name)
             
@@ -585,12 +588,7 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             if sfx_path:
                 try:
                     sfx_clip = AudioFileClip(sfx_path)
-                    # 효과음 볼륨 조절 (너무 크지 않게 0.5~0.7)
                     sfx_clip = sfx_clip.volumex(0.6)
-                    
-                    # 내레이션과 동시에 재생 (Overlay)
-                    # CompositeAudioClip을 사용하여 두 소리를 합칩니다.
-                    # 효과음이 내레이션보다 길면 잘라내지 않고 그대로 둡니다.
                     audio_clip = CompositeAudioClip([audio_clip, sfx_clip])
                     
                 except Exception as e:
@@ -600,44 +598,44 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             scene_duration = audio_clip.duration
             
             # 2. 비주얼 프롬프트 분석 ('||' 기준으로 쪼개기)
-            # 예: "고양이가 밥먹음 || 고양이가 잠" -> ["고양이가 밥먹음", "고양이가 잠"]
             raw_prompts = scene['visual_prompt'].split('||')            
             scene_sub_clips = [] 
             
-            # 총 컷 수에 맞춰 시간 배분
-            clip_duration = scene_duration / len(raw_prompts) if raw_prompts else scene_duration
+            # 컷 당 지속 시간 계산
+            # 프롬프트가 비어있을 경우를 대비한 안전장치 추가
+            valid_prompts = [p.strip() for p in raw_prompts if p.strip()]
+            if not valid_prompts: valid_prompts = [scene['visual_prompt']]
             
-            for sub_idx, raw_text in enumerate(raw_prompts):
-                raw_text = raw_text.strip()
-                if not raw_text: continue
+            clip_duration = scene_duration / len(valid_prompts)
+            
+            # 3. 각 컷 별로 이미지 생성 및 클립 만들기            
+            for sub_idx, raw_text in enumerate(valid_prompts):
                 
-                # [핵심 수정] 여기서 캐릭터 묘사와 화풍을 강제로 합칩니다!
-                # 구조: [주인공 묘사] + [현재 동작] + [화풍/조명]
+                # [캐릭터/화풍 강제 주입]
                 final_prompt = f"{character_desc}, {raw_text}, {video_style}, cinematic lighting"
                 
                 img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
-                status_box.write(f"    └ 컷 {sub_idx+1}: {raw_text[:15]}... (Eng)")
+                status_box.write(f"    └ 컷 {sub_idx+1}: {raw_text[:15]}...")
                 
-                # 수정된 final_prompt를 넘겨줍니다.
                 img_path = generate_image_google(final_prompt, img_name)
                 
                 if img_path:
                     try:
+                        # 이미지 클립 생성
                         sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
+                        
+                        # [랜덤 모션 적용]
                         sub_clip = apply_random_motion(sub_clip)
+                        
                         scene_sub_clips.append(sub_clip)
                     except Exception as e:
-                        st.warning(f"이미지 처리 중 오류: {e}")
+                        st.warning(f"이미지 클립 오류: {e}")
             
             # 4. 조각 영상들 합치기 + 오디오 입히기
             if scene_sub_clips:
                 try:
-                    # 이미지 1, 2, 3을 순서대로 이어 붙임
                     full_scene_clip = concatenate_videoclips(scene_sub_clips, method="compose")
-                    
-                    # 오디오 설정 (길이가 미세하게 안 맞을 수 있으므로 오디오 길이에 맞춤)
                     full_scene_clip = full_scene_clip.set_audio(audio_clip)
-                    
                     generated_clips.append(full_scene_clip)
                 except Exception as e:
                     st.error(f"Scene {idx} 합치기 실패: {e}")
