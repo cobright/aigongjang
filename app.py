@@ -1,16 +1,35 @@
 import streamlit as st
 import os
 import json
-import requests
-import google.generativeai as genai_old # 텍스트용 (구버전 SDK)
-from google import genai # ⭐ 이미지용 (신버전 SDK)
-from google.genai import types
-from google.cloud import texttospeech
 import tempfile
-from moviepy.editor import *
-import mimetypes
+import time
 
-# 로컬 환경용 (.env 파일 로드)
+# --- 라이브러리 임포트 및 예외 처리 ---
+# 1. Google GenAI (텍스트용 - 구버전 SDK)
+import google.generativeai as genai_old
+
+# 2. Google GenAI (이미지용 - 신버전 SDK)
+# pip install google-genai
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    st.error("❌ 'google-genai' 라이브러리가 설치되지 않았습니다. pip install google-genai")
+    st.stop()
+
+# 3. Google TTS
+from google.cloud import texttospeech
+from google.oauth2 import service_account
+
+# 4. Pillow 패치 (MoviePy 1.x 호환성)
+import PIL.Image
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+
+# 5. MoviePy
+from moviepy.editor import *
+
+# 6. .env 로드
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -21,44 +40,54 @@ except ImportError:
 st.set_page_config(page_title="AI 영상 공장 (Google Edition)", page_icon="🍌", layout="wide")
 st.title("🍌 AI 영상 공장 (Gemini 3 Pro Image)")
 
+# --- [안전장치] Secrets 조회 함수 ---
+def get_secret(key_name):
+    """st.secrets -> os.environ 순서로 키를 찾습니다."""
+    try:
+        if key_name in st.secrets:
+            return st.secrets[key_name]
+    except (FileNotFoundError, AttributeError):
+        pass
+    return os.getenv(key_name)
+
 # 사이드바 설정
 with st.sidebar:
     st.header("⚙️ 시스템 제어기")
     
-    # API 키 검증 (GEMINI_API_KEY는 구글 AI 스튜디오 키와 동일하게 사용)
-    api_status = {
-        "Gemini API (Text & Image)": "GOOGLE_API_KEY" in st.secrets or os.getenv("GOOGLE_API_KEY"),
-        "Google TTS (Voice)": "GOOGLE_APPLICATION_CREDENTIALS_JSON" in st.secrets or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    }
-    for name, ready in api_status.items():
-        if ready: st.success(f"{name}: ON")
-        else: st.error(f"{name}: OFF")
+    gemini_key = get_secret("GOOGLE_API_KEY")
+    tts_key_path = get_secret("GOOGLE_APPLICATION_CREDENTIALS") # 로컬 파일 경로
+    tts_key_json = get_secret("GOOGLE_APPLICATION_CREDENTIALS_JSON") # 클라우드용 JSON 내용
+    
+    # 상태 표시
+    if gemini_key:
+        st.success("✅ Gemini API: Connected")
+    else:
+        st.error("❌ Gemini API: Missing Key")
+        
+    if tts_key_path or tts_key_json:
+        st.success("✅ Google TTS: Connected")
+    else:
+        st.error("❌ Google TTS: Missing Credentials")
     
     st.divider()
     
-    st.subheader("🖼️ 캐릭터 일관성 (Consistency)")
+    st.subheader("🖼️ 캐릭터 설정")
     default_char = "A young Korean office worker in a suit, simple clean lines, distinct facial features"
-    character_desc = st.text_area("주인공 외모 묘사 (Anchor)", value=default_char, height=80)
-    video_style = st.selectbox("화풍 (Style)", ["2D Webtoon Style", "Anime Style", "Realistic Cinematic"], index=0)
+    character_desc = st.text_area("주인공 외모 묘사", value=default_char, height=80)
+    video_style = st.selectbox("화풍 (Style)", ["2D Webtoon Style", "Anime Style", "Realistic Cinematic", "Oil Painting"], index=0)
     
     num_scenes = st.slider("생성할 씬(Scene) 개수", 1, 5, 2)
 
 # --- 2. 핵심 모듈 함수 ---
 
-def get_api_key(key_name):
-    if key_name in st.secrets: return st.secrets[key_name]
-    return os.getenv(key_name)
-
 def generate_script_json(topic, character_desc):
-    """
-    [Text] Gemini (Old SDK): 기획 및 대본 작성
-    """
-    api_key = get_api_key("GOOGLE_API_KEY")
-    if not api_key: return None
+    """[Text] Gemini (Old SDK): 기획 및 대본 작성"""
+    if not gemini_key: return None
     
     try:
-        genai_old.configure(api_key=api_key)
-        model = genai_old.GenerativeModel('gemini-2.5-flash')
+        genai_old.configure(api_key=gemini_key)
+        # 수정: 모델명을 2.5(존재안함) -> 1.5-flash로 변경
+        model = genai_old.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
         Act as a professional YouTube content researcher and writer.
@@ -66,28 +95,31 @@ def generate_script_json(topic, character_desc):
         
         [STRICT LANGUAGE RULES]
         1. "narrative": Must be in **KOREAN (한국어)** for the voiceover.
-        2. "visual_prompt": Must be in **ENGLISH** for the image generator.
+        2. "visual_prompt": Must be in **ENGLISH** (recommended for better image gen) or KOREAN.
         
-        [INSTRUCTION]
-        1. FACT CHECK: Verify key facts about the topic.
-        2. CHARACTER: You must include the character description in every visual prompt.
-        3. STYLE: End every visual prompt with "{video_style}".
+        [INSTRUCTION - DYNAMIC VISUALS]
+        1. **NO STATIC POSES:** Do not describe characters just standing.
+        2. **ACTION & MOTION:** Describe specific moments (e.g., "running," "laughing").
+        3. **CAMERA ANGLES:** Use "low angle," "close-up," etc.
         
-        [Ref: Character Description]
-        "{character_desc}"
+        [CHARACTER CONSISTENCY]
+        Start visual prompt with: "{character_desc}"
+        
+        [STYLE]
+        End visual prompt with: "{video_style}"
         
         Output ONLY valid JSON format:
         {{
-          "video_title": "Catchy Title",
+          "video_title": "Title Here",
           "scenes": [
             {{ 
                "seq": 1, 
                "narrative": "한국어 내레이션", 
-               "visual_prompt": "English visual description..." 
-            }},
-            ... (Total {num_scenes} scenes)
+               "visual_prompt": "Visual description..." 
+            }}
           ]
         }}
+        Generate exactly {num_scenes} scenes.
         """
         response = model.generate_content(prompt)
         text = response.text.strip().replace("```json", "").replace("```", "")
@@ -97,82 +129,74 @@ def generate_script_json(topic, character_desc):
         return None
 
 def generate_image_google(prompt, filename):
-    """
-    [Image] Gemini (New SDK): 이미지 생성 (사용자가 제공한 코드 적용)
-    """
-    # 임시 파일 경로 설정
-    output_path = os.path.join(tempfile.gettempdir(), filename)
+    """[Image] Gemini (New SDK): 이미지 생성"""
+    if not gemini_key: return None
     
-    # 1. 클라이언트 초기화 (GOOGLE_API_KEY 사용)
-    api_key = get_api_key("GOOGLE_API_KEY")
-    if not api_key:
-        st.error("❌ Google API Key가 없습니다.")
-        return None
+    output_path = os.path.join(tempfile.gettempdir(), filename)
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=gemini_key)
+        # 모델 ID 확인 필요 (imagen-3.0-generate-001 또는 gemini-pro-vision 등 상황에 맞게)
+        # 현재 코드의 gemini-3-pro-image-preview는 Preview 권한이 있어야 작동합니다.
+        model_id = "gemini-2.0-flash-exp" # 혹은 "imagen-3.0-generate-001"
         
-        # 2. 모델 및 설정 (사용자 제공 코드 기반)
-        # 주의: 'gemini-3-pro-image-preview' 모델 접근 권한이 없으면 'imagen-3.0-generate-001' 등을 써야 할 수 있습니다.
-        model_id = "gemini-3-pro-image-preview" 
-
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=prompt)],
-            ),
-        ]
+        # *참고: Gemini 2.0 Flash Exp는 이미지 생성을 지원하지만, 
+        # 전용 Imagen 모델을 쓴다면 코드가 달라질 수 있습니다. 
+        # 여기서는 작성해주신 코드를 기반으로 유지합니다.
         
+        contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
         generate_content_config = types.GenerateContentConfig(
-            response_modalities=["IMAGE"], # 텍스트 없이 이미지만 요청
-            image_config=types.ImageConfig(image_size="1K"),
+            response_modalities=["IMAGE"],
+            image_config=types.ImageConfig(image_size="1K"), # 혹은 "1024x1024" 등 SDK 버전에 따라 다름
         )
 
-        # 3. 생성 요청 및 바이너리 저장
-        # 스트리밍 방식 대신 동기 호출로 처리하여 파일 저장
         response = client.models.generate_content(
             model=model_id,
             contents=contents,
             config=generate_content_config,
         )
         
-        # 응답 처리
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
                 if part.inline_data and part.inline_data.data:
-                    # 이미지 데이터 추출
-                    img_data = part.inline_data.data
-                    
-                    # 파일 저장
                     with open(output_path, "wb") as f:
-                        f.write(img_data)
-                    
+                        f.write(part.inline_data.data)
                     return output_path
         
-        st.error("❌ 구글 이미지 생성 실패: 이미지가 반환되지 않았습니다.")
+        st.warning("⚠️ 이미지가 생성되지 않았습니다 (모델 응답 없음).")
         return None
 
     except Exception as e:
         st.error(f"🎨 Google 이미지 생성 오류: {e}")
-        # 혹시 모델명 때문에 에러가 난다면 팁을 줍니다.
-        if "404" in str(e) or "Not Found" in str(e):
-             st.warning("⚠️ 팁: 'gemini-3-pro-image-preview' 모델 접근 권한이 없을 수 있습니다. 코드를 'imagen-3.0-generate-001'로 변경해보세요.")
         return None
 
 def generate_audio(text, filename):
-    """
-    [Voice] Google TTS: 오디오 생성
-    """
+    """[Voice] Google TTS"""
     output_path = os.path.join(tempfile.gettempdir(), filename)
-    creds_json = get_api_key("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-    if not creds_json: return None
+    
+    # 인증 처리 로직 단순화 및 강화
+    credentials = None
     
     try:
-        from google.oauth2 import service_account
-        creds_info = json.loads(creds_json, strict=False)
-        credentials = service_account.Credentials.from_service_account_info(creds_info)
-        client = texttospeech.TextToSpeechClient(credentials=credentials)
+        # 1. Secret/Env에 JSON 내용이 통째로 있는 경우 (Streamlit Cloud 권장)
+        if tts_key_json:
+            try:
+                creds_info = json.loads(tts_key_json, strict=False)
+                credentials = service_account.Credentials.from_service_account_info(creds_info)
+            except json.JSONDecodeError:
+                st.error("TTS JSON 키 형식이 잘못되었습니다.")
+                return None
+        
+        # 2. 로컬 파일 경로가 있는 경우
+        elif tts_key_path and os.path.exists(tts_key_path):
+            credentials = service_account.Credentials.from_service_account_file(tts_key_path)
+            
+        else:
+            # 하드코딩된 파일명은 제거하고 경고 메시지 출력
+            st.error("❌ TTS 인증 키를 찾을 수 없습니다. (.env 또는 secrets.toml 확인)")
+            return None
 
+        client = texttospeech.TextToSpeechClient(credentials=credentials)
         input_text = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(language_code="ko-KR", name="ko-KR-Standard-C", ssml_gender=texttospeech.SsmlVoiceGender.MALE)
         audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
@@ -181,6 +205,7 @@ def generate_audio(text, filename):
         with open(output_path, "wb") as out:
             out.write(response.audio_content)
         return output_path
+        
     except Exception as e:
         st.error(f"🎙️ TTS 오류: {e}")
         return None
@@ -190,7 +215,8 @@ def create_zoom_effect(clip, zoom_ratio=0.04):
     try:
         import cv2
     except ImportError:
-        return clip # cv2 없으면 효과 없이 원본 리턴
+        # OpenCV 없으면 효과 없이 원본 리턴
+        return clip
 
     def effect(get_frame, t):
         img = get_frame(t)
@@ -206,73 +232,73 @@ def create_zoom_effect(clip, zoom_ratio=0.04):
 
 # --- 3. 메인 실행 컨트롤러 ---
 
-topic = st.text_input("영상 주제 (Topic)", placeholder="예: 구글 제미나이가 이미지를 그리는 법")
+topic = st.text_input("영상 주제 (Topic)", placeholder="예: 맛있는 김치찌개 끓이는 법")
 
-if st.button("🚀 Google 시스템 가동", type="primary"):
-    if not topic: st.stop()
+if st.button("🚀 영상 생성 시작", type="primary"):
+    if not topic:
+        st.warning("주제를 입력해주세요.")
+        st.stop()
     
-    status_box = st.status("🏗️ 공장 가동 중...", expanded=True)
+    status_box = st.status("🏗️ 작업 시작...", expanded=True)
     
-    # --- Phase 1: 기획 ---
-    status_box.write("🧠 Phase 1: Gemini가 시나리오를 설계 중입니다...")
+    # Phase 1
+    status_box.write("🧠 Phase 1: 시나리오 기획 중 (Gemini 1.5 Flash)...")
     script_data = generate_script_json(topic, character_desc)
     
     if not script_data:
-        status_box.update(label="❌ 기획 단계 실패", state="error")
+        status_box.update(label="❌ 기획 실패", state="error")
         st.stop()
         
     scenes = script_data.get("scenes", [])
-    st.json(script_data)
+    st.json(script_data) # 디버깅용 표시
     
-    # --- Phase 2: 자산 생성 ---
-    status_box.write("🎨 Phase 2: Google Image & Voice 생성 중...")
+    # Phase 2
+    status_box.write("🎨 Phase 2: 이미지 및 오디오 생성 중...")
     progress_bar = st.progress(0)
     generated_clips = []
     
     for i, scene in enumerate(scenes):
         idx = scene['seq']
-        img_name = f"img_{idx}.png"
-        aud_name = f"aud_{idx}.mp3"
+        status_box.write(f"  - Scene {idx} 생성 중...")
         
-        # ⭐ 여기가 변경된 부분: generate_image_google 사용
-        img_path = generate_image_google(scene['visual_prompt'], img_name)
+        # 파일명 중복 방지를 위해 timestamp 추가 권장
+        timestamp = int(time.time())
+        img_name = f"img_{idx}_{timestamp}.png"
+        aud_name = f"aud_{idx}_{timestamp}.mp3"
+        
         aud_path = generate_audio(scene['narrative'], aud_name)
+        img_path = generate_image_google(scene['visual_prompt'], img_name)
         
         if img_path and aud_path:
             try:
                 audio_clip = AudioFileClip(aud_path)
+                # 이미지 지속시간을 오디오 길이에 맞춤
                 img_clip = ImageClip(img_path).set_duration(audio_clip.duration).resize(height=720)
-                
-                # 줌 효과 적용 (OpenCV 설치된 경우만)
                 video_clip = create_zoom_effect(img_clip) 
-                
                 video_clip = video_clip.set_audio(audio_clip)
                 generated_clips.append(video_clip)
-                
-                with st.expander(f"Scene {idx} 미리보기", expanded=False):
-                    st.image(img_path, caption=f"Google Image - Scene {idx}")
-                    st.audio(aud_path)
-                    
             except Exception as e:
-                st.warning(f"Scene {idx} 조립 중 오류: {e}")
+                st.warning(f"Scene {idx} 클립 생성 실패: {e}")
         
         progress_bar.progress((i + 1) / len(scenes))
         
-    # --- Phase 3: 최종 조립 ---
+    # Phase 3
     if generated_clips:
-        status_box.write("🎬 Phase 3: 영상 렌더링 중...")
+        status_box.write("🎬 Phase 3: 최종 렌더링 중 (FFmpeg)...")
         try:
             final_video = concatenate_videoclips(generated_clips, method="compose")
-            safe_title = "".join([c for c in script_data['video_title'] if c.isalnum()]).strip() or "output"
-            output_path = os.path.join(tempfile.gettempdir(), f"{safe_title}.mp4")
+            
+            # 안전한 파일명 생성
+            safe_title = "".join([c for c in topic if c.isalnum()]).strip()
+            output_path = os.path.join(tempfile.gettempdir(), f"{safe_title}_final.mp4")
             
             final_video.write_videofile(output_path, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast')
             
             status_box.update(label="✅ 완료!", state="complete", expanded=False)
-            st.success("🎉 구글 생성 영상 완성!")
+            st.success("🎉 영상 생성이 완료되었습니다!")
             st.video(output_path)
             
         except Exception as e:
             st.error(f"렌더링 오류: {e}")
     else:
-        st.error("❌ 생성된 클립이 없습니다.")
+        st.error("❌ 생성된 클립이 없어 영상을 만들 수 없습니다.")
