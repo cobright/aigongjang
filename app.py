@@ -80,6 +80,14 @@ with st.sidebar:
     
     num_scenes = st.slider("생성할 씬(Scene) 개수 (권장: 4개 이상)", 2, 6, 4)
 
+    st.divider()
+    st.subheader("🎵 배경음악 (BGM)")
+    bgm_mood = st.selectbox(
+        "분위기 선택", 
+        ["🌞 밝고 경쾌한 (Bright)", "☕ 차분한 (Calm)", "🔥 박진감 넘치는 (Epic)", "🔇 없음 (Mute)"],
+        index=0
+    )
+
 # --- 2. 핵심 모듈 함수 ---
 
 def generate_script_json(topic, character_desc, num_scenes):
@@ -102,33 +110,31 @@ def generate_script_json(topic, character_desc, num_scenes):
         
         [STRUCTURE STRATEGY - MUST FOLLOW]
         Organize the {num_scenes} scenes strictly according to this flow:
-        1. **HOOK (First 25% of scenes)**: Start with a question, a shocking fact, or a "Did you know?". Grab attention in 3 seconds.
-        2. **BODY (Middle 50% of scenes)**: Explain the "How-to", "Why", or the core story. Fast-paced information.
-        3. **OUTRO/CTA (Last 25% of scenes)**: A quick summary or punchline. End with a Call to Action (e.g., "Try this today!").
+        1. **HOOK**: Start with a question or shock.
+        2. **BODY**: Explain the core story.
+        3. **OUTRO**: Conclusion and CTA.
 
         [STRICT LANGUAGE RULES]
-        1. "narrative": Must be in **KOREAN (한국어)**. Conversational, spoken style (구어체).
-           - Do NOT use: "안녕하십니까", "오늘은~". (Too formal)
-           - USE: "이거 진짜 대박입니다.", "혹시 알고 계셨나요?" (Engaging)
-        2. "visual_prompt": Must be in **KOREAN (한국어)** (Best for image generation).
+        1. "narrative": Must be in **KOREAN (한국어)**. Conversational style.
+        2. "visual_prompt": Must be in **KOREAN (한국어)**.
         
-        [VISUAL DIRECTIVES]
-        - Start every visual prompt with: "{character_desc}"
-        - End every visual prompt with: "{video_style}, Cinematic lighting, 8k resolution"
-        - **Constraint**: Describe the character DOING something active (eating, running, pointing, shocked face). NO boring standing poses.
-
+        [DYNAMIC VISUAL INSTRUCTION - IMPORTANT]
+        To make the video dynamic, **you MUST provide 2 or 3 different visual descriptions per scene**, separated by " || ".
+        - Example: "Close up of a man eating kimchi || Wide shot of the restaurant || The man giving a thumbs up"
+        - This will generate 3 images shown in sequence for this one scene.
+        
         [OUTPUT FORMAT]
         Return ONLY valid JSON:
         {{
-          "video_title": "A short, catchy viral title in Korean",
+          "video_title": "Title in Korean",
           "scenes": [
             {{ 
                "seq": 1, 
                "section": "HOOK",
-               "narrative": "Korean voiceover text...", 
-               "visual_prompt": "Detailed Korean image description..." 
+               "narrative": "Korean voiceover...", 
+               "visual_prompt": "Image Desc 1 || Image Desc 2" 
             }},
-            ... (Generate exactly {num_scenes} scenes)
+            ...
           ]
         }}
         """
@@ -250,6 +256,45 @@ def create_zoom_effect(clip, zoom_ratio=0.04):
 
     return clip.fl(effect)
 
+def get_bgm_path(mood):
+    """
+    선택된 분위기(mood)에 맞는 무료 BGM을 다운로드하여 경로를 반환합니다.
+    (저작권 무료 음원: Kevin MacLeod 등 Open Source 활용)
+    """
+    if mood == "🔇 없음 (Mute)":
+        return None
+        
+    # 분위기별 음원 URL (안정적인 GitHub Raw 소스 등을 사용하는 것이 좋으나, 예시로 무료 음원 링크 사용)
+    # 실제 운영 시에는 본인의 서버나 S3 링크로 교체하는 것을 권장합니다.
+    bgm_urls = {
+        "🌞 밝고 경쾌한 (Bright)": "https://www.bensound.com/bensound-music/bensound-ukulele.mp3", # 예시 URL
+        "☕ 차분한 (Calm)": "https://www.bensound.com/bensound-music/bensound-slowmotion.mp3", 
+        "🔥 박진감 넘치는 (Epic)": "https://www.bensound.com/bensound-music/bensound-evolution.mp3"
+    }
+    
+    url = bgm_urls.get(mood)
+    if not url: return None
+    
+    # 임시 파일명 (분위기별로 캐싱)
+    filename = f"bgm_{mood[:2]}.mp3"
+    filepath = os.path.join(tempfile.gettempdir(), filename)
+    
+    # 이미 다운로드 받은 파일이 있으면 재사용 (속도 향상)
+    if os.path.exists(filepath):
+        return filepath
+        
+    try:
+        # User-Agent 헤더 추가 (차단 방지)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        with open(filepath, "wb") as f:
+            f.write(response.content)
+        return filepath
+    except Exception as e:
+        st.warning(f"BGM 다운로드 실패: {e}")
+        return None
+
+
 def get_korean_font():
     """
     한글 폰트(나눔고딕)를 임시 폴더에 다운로드하여 경로를 반환합니다.
@@ -350,7 +395,7 @@ if st.button("💡 1. 기획안(대본) 생성하기", type="primary", use_conta
 if st.session_state["step"] >= 2 and st.session_state["script_data"]:
     st.divider()
     st.header("Step 2. 대본 및 연출 수정")
-    st.info("💡 아래 내용을 수정하면, 수정된 내용대로 영상이 만들어집니다.")
+    st.info("💡 꿀팁: '그림 묘사' 칸에 ` || ` 기호를 넣으면 컷이 쪼개집니다. (예: 남자의 얼굴 || 놀라는 표정)")
 
     data = st.session_state["script_data"]
     scenes = data.get("scenes", [])
@@ -404,70 +449,124 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
         # 본격적인 생성 시작
         status_box = st.status("🏗️ 영상 제작 공장 가동 중...", expanded=True)
         
-        # Phase 2: Asset Generation
-        status_box.write("🎨 Phase 2: 이미지 및 오디오 생성 중...")
+        # --- Phase 2: 다이나믹 컷 생성 (컷 쪼개기 적용) ---
+        status_box.write("🎨 Phase 2: 다이나믹 컷(이미지 분할) 및 오디오 생성 중...")
         progress_bar = st.progress(0)
         generated_clips = []
         
-        # --- 수정된 Phase 2 루프 시작 ---
         for i, scene in enumerate(final_scenes):
             idx = scene['seq']
-            status_box.write(f"  - Scene {idx} 작업 중 (이미지+오디오+자막)...")
+            status_box.write(f"  - Scene {idx} 작업 중...")
             
             timestamp = int(time.time())
-            img_name = f"img_{idx}_{timestamp}.png"
+            
+            # 1. 오디오 먼저 생성 (길이를 알아야 컷을 나눌 수 있음)
             aud_name = f"aud_{idx}_{timestamp}.mp3"
-            
-            # 오디오/이미지 생성
             aud_path = generate_audio(scene['narrative'], aud_name)
-            img_path = generate_image_google(scene['visual_prompt'], img_name)
             
-            if img_path and aud_path:
+            if not aud_path:
+                continue # 오디오 실패 시 건너뜀
+                
+            audio_clip = AudioFileClip(aud_path)
+            scene_duration = audio_clip.duration
+            
+            # 2. 비주얼 프롬프트 분석 ('||' 기준으로 쪼개기)
+            # 예: "고양이가 밥먹음 || 고양이가 잠" -> ["고양이가 밥먹음", "고양이가 잠"]
+            raw_prompts = scene['visual_prompt'].split('||')
+            visual_prompts = [p.strip() for p in raw_prompts if p.strip()]
+            
+            # 만약 쪼갤 게 없으면 그냥 1개로 처리
+            if not visual_prompts:
+                visual_prompts = [scene['visual_prompt']]
+            
+            # 컷 당 지속 시간 계산 (총 시간 / 이미지 개수)
+            # 예: 오디오 6초, 이미지 3장이면 -> 각 2초씩 보여줌
+            clip_duration = scene_duration / len(visual_prompts)
+            
+            scene_sub_clips = [] # 이 씬을 구성할 작은 조각 영상들
+            
+            # 3. 각 컷 별로 이미지 생성 및 클립 만들기
+            for sub_idx, prompt in enumerate(visual_prompts):
+                img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
+                status_box.write(f"    └ 컷 {sub_idx+1}/{len(visual_prompts)}: {prompt[:20]}...")
+                
+                img_path = generate_image_google(prompt, img_name)
+                
+                if img_path:
+                    try:
+                        # 이미지 클립 생성 (계산된 시간만큼)
+                        sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
+                        
+                        # 줌 효과도 각각 적용 (더 역동적임)
+                        sub_clip = create_zoom_effect(sub_clip)
+                        scene_sub_clips.append(sub_clip)
+                    except Exception as e:
+                        st.warning(f"이미지 처리 중 오류: {e}")
+            
+            # 4. 조각 영상들 합치기 + 오디오 입히기
+            if scene_sub_clips:
                 try:
-                    # 1. 기본 영상 클립 생성
-                    audio_clip = AudioFileClip(aud_path)
-                    duration = audio_clip.duration
+                    # 이미지 1, 2, 3을 순서대로 이어 붙임
+                    full_scene_clip = concatenate_videoclips(scene_sub_clips, method="compose")
                     
-                    img_clip = ImageClip(img_path).set_duration(duration).resize(height=720)
-                    video_clip = create_zoom_effect(img_clip) # 줌 효과 적용
+                    # 오디오 설정 (길이가 미세하게 안 맞을 수 있으므로 오디오 길이에 맞춤)
+                    full_scene_clip = full_scene_clip.set_audio(audio_clip)
                     
-                    # 2. 자막 클립 생성 (NEW)
-                    font_path = get_korean_font()
-                    subtitle_clip = create_subtitle(scene['narrative'], duration, font_path)
-                    
-                    # 3. 영상 + 자막 합성
-                    if subtitle_clip:
-                        # 자막을 영상 위에 겹치기 (Overlay)
-                        final_clip = CompositeVideoClip([video_clip, subtitle_clip])
-                    else:
-                        final_clip = video_clip
-                    
-                    final_clip = final_clip.set_audio(audio_clip)
-                    generated_clips.append(final_clip)
-                    
+                    generated_clips.append(full_scene_clip)
                 except Exception as e:
-                    st.warning(f"Scene {idx} 클립 생성 실패: {e}")
+                    st.error(f"Scene {idx} 합치기 실패: {e}")
             
             progress_bar.progress((i + 1) / len(final_scenes))
 
-        # Phase 3: Final Rendering
+        # Phase 3: Final Rendering (BGM Mixing 추가)
         if generated_clips:
-            status_box.write("🎬 Phase 3: 최종 합치기 및 렌더링...")
+            status_box.write("🎬 Phase 3: 영상 합치기 및 BGM 믹싱 중...")
             try:
+                # 1. 컷 편집된 영상 연결
                 final_video = concatenate_videoclips(generated_clips, method="compose")
                 
+                # 2. BGM 처리 로직
+                bgm_path = get_bgm_path(bgm_mood)
+                
+                if bgm_path:
+                    try:
+                        # BGM 로드
+                        bgm_clip = AudioFileClip(bgm_path)
+                        
+                        # 영상 길이에 맞춰 BGM 반복(Loop) 또는 자르기
+                        # (영상보다 BGM이 짧으면 반복, 길면 자름)
+                        if bgm_clip.duration < final_video.duration:
+                            # 짝수 번 반복해서 충분히 길게 만듦
+                            loop_count = int(final_video.duration // bgm_clip.duration) + 2
+                            bgm_clip = concatenate_audioclips([bgm_clip] * loop_count)
+                        
+                        bgm_clip = bgm_clip.set_duration(final_video.duration)
+                        
+                        # 볼륨 조절 (가장 중요!)
+                        # 목소리(Voice)는 100%, BGM은 10%~15% 수준으로 낮춤
+                        voice_clip = final_video.audio.volumex(1.0) # 원본 목소리 유지
+                        bgm_clip = bgm_clip.volumex(0.15)           # 배경음악 15% (은은하게)
+                        
+                        # 페이드 아웃 (끝날 때 2초간 서서히 작아짐)
+                        bgm_clip = bgm_clip.audio_fadeout(2)
+                        
+                        # 오디오 합치기 (목소리 + BGM)
+                        final_audio = CompositeAudioClip([voice_clip, bgm_clip])
+                        final_video = final_video.set_audio(final_audio)
+                        
+                    except Exception as e:
+                        st.warning(f"BGM 합성 중 오류 발생(영상은 BGM 없이 생성됩니다): {e}")
+
+                # 3. 최종 내보내기
                 safe_title = "".join([c for c in new_title if c.isalnum()]).strip() or "output"
                 output_path = os.path.join(tempfile.gettempdir(), f"{safe_title}_final.mp4")
                 
-                # 프리셋을 ultrafast로 하여 속도 최적화
                 final_video.write_videofile(output_path, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast')
                 
                 status_box.update(label="✅ 영상 완성!", state="complete", expanded=False)
                 st.balloons()
-                st.success(f"🎉 '{new_title}' 영상이 완성되었습니다!")
+                st.success(f"🎉 '{new_title}' 영상이 완성되었습니다! (BGM: {bgm_mood})")
                 st.video(output_path)
                 
             except Exception as e:
                 st.error(f"렌더링 오류: {e}")
-        else:
-            st.error("❌ 생성된 클립이 없습니다.")
