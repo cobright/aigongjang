@@ -87,7 +87,7 @@ def generate_script_json(topic, character_desc):
     try:
         genai_old.configure(api_key=gemini_key)
         # 수정: 모델명을 2.5(존재안함) -> 1.5-flash로 변경
-        model = genai_old.GenerativeModel('gemini-1.5-flash')
+        model = genai_old.GenerativeModel('gemini-2.5-flash')
         
         prompt = f"""
         Act as a professional YouTube content researcher and writer.
@@ -302,4 +302,5 @@ if st.button("🚀 영상 생성 시작", type="primary"):
             st.error(f"렌더링 오류: {e}")
     else:
         st.error("❌ 생성된 클립이 없어 영상을 만들 수 없습니다.")
+
 
