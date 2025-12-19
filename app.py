@@ -155,6 +155,23 @@ with st.sidebar:
     st.info(f"💡 특징: {GENRE_SETTINGS[selected_genre]['tone']}")
     
     st.divider()
+    # (사이드바 장르 선택 아래에 추가)
+    
+    # [NEW] 화면 비율 선택 (가로 vs 세로)
+    ratio_options = ["16:9 가로 (YouTube)", "9:16 세로 (Shorts)"]
+    selected_ratio = st.radio("화면 비율 (Aspect Ratio)", ratio_options, index=0)
+    
+    # 전역 변수 설정 (코드 전체에서 쓰임)
+    is_shorts = "9:16" in selected_ratio
+    
+    # 비율에 따른 해상도 설정
+    if is_shorts:
+        VIDEO_W, VIDEO_H = 720, 1280 # 쇼츠 해상도
+    else:
+        VIDEO_W, VIDEO_H = 1280, 720 # 가로 해상도
+        
+    st.divider()
+        
     # [1] 주인공 페르소나 (4단 조립)
     st.subheader("👤 주인공 (Persona)")
     with st.expander("캐릭터 상세 설정 열기", expanded=True):
@@ -600,16 +617,15 @@ def get_korean_font():
 
 def create_subtitle_clip(text, duration, font_path):
     """
-    [개선됨] 긴 문장 자동 줄바꿈 + 중앙 정렬 + 폰트 크기 최적화
+    [Ratio Aware] 비율에 맞춰 자막 위치와 줄바꿈 자동 조절
     """
     try:
-        w, h = 1280, 720
-        # 투명 캔버스 생성
+        # 전역 변수 해상도 사용
+        w, h = VIDEO_W, VIDEO_H
         img = PIL.Image.new('RGBA', (w, h), (255, 255, 255, 0))
         draw = PIL.ImageDraw.Draw(img)
         
-        # 1. 폰트 설정 (크기를 55 -> 40으로 줄임)
-        font_size = 40 
+        font_size = 40 if not is_shorts else 50 # 쇼츠는 폰트 좀 더 크게
         try:
             if font_path:
                 font = PIL.ImageFont.truetype(font_path, font_size)
@@ -618,30 +634,20 @@ def create_subtitle_clip(text, duration, font_path):
         except:
             font = PIL.ImageFont.load_default()
 
-        # 2. 자동 줄바꿈 (핵심!)
-        # 화면 폭에 맞춰서 약 30~35글자마다 줄을 바꿈
-        wrapped_text = textwrap.fill(text, width=35)
+        # [핵심] 쇼츠면 폭이 좁으므로 줄바꿈을 더 자주 (20자 vs 35자)
+        wrap_width = 20 if is_shorts else 35
+        wrapped_text = textwrap.fill(text, width=wrap_width)
 
-        # 3. 글자 크기 및 위치 계산 (여러 줄일 경우를 대비해 multiline 사용)
-        # 텍스트 박스 크기 구하기
         left, top, right, bottom = draw.multiline_textbbox((0, 0), wrapped_text, font=font, align="center")
         text_w = right - left
         text_h = bottom - top
         
-        # 정중앙 하단 위치 계산
         x = (w - text_w) / 2
-        y = h - text_h - 50 # 바닥에서 50px 위 (여유 공간 확보)
+        # 위치 조절: 쇼츠는 바닥에서 좀 더 띄움 (댓글창 가림 방지)
+        margin_bottom = 250 if is_shorts else 100
+        y = h - text_h - margin_bottom
 
-        # 4. 그리기 (테두리 포함)
-        draw.multiline_text(
-            (x, y), 
-            wrapped_text, 
-            font=font, 
-            fill="white", 
-            stroke_width=3, 
-            stroke_fill="black", 
-            align="center"
-        )
+        draw.multiline_text((x, y), wrapped_text, font=font, fill="white", stroke_width=3, stroke_fill="black", align="center")
         
         return ImageClip(np.array(img)).set_duration(duration)
         
@@ -649,35 +655,25 @@ def create_subtitle_clip(text, duration, font_path):
         print(f"자막 생성 오류: {e}")
         return None
 
-# --- (create_subtitle_clip 함수 아래에 추가) ---
-
 def get_pexels_video(query, duration):
     """
-    [Stock Video] Pexels API를 사용하여 무료 영상을 다운로드하고,
-    오디오 길이에 맞게 편집(Loop/Cut)하여 반환합니다.
+    [Ratio Aware] 가로/세로 모드에 맞춰 검색 및 크롭
     """
-    # 1. API 키 확인 (사이드바 입력값 또는 Secrets)
     api_key = get_secret("PEXELS_API_KEY") 
-    if not api_key:
-        st.error("❌ Pexels API Key가 없습니다. 사이드바 설정을 확인하세요.")
-        return None
+    if not api_key: return None
         
-    # 2. 검색 요청
     headers = {'Authorization': api_key}
-    # landscape(가로), medium(중간화질) 설정으로 전송량 절약
-    params = {'query': query, 'per_page': 1, 'orientation': 'landscape', 'size': 'medium'}
+    # [핵심] 모드에 따라 검색 방향 변경
+    orientation = 'portrait' if is_shorts else 'landscape'
+    params = {'query': query, 'per_page': 1, 'orientation': orientation, 'size': 'medium'}
     
     try:
         response = requests.get('https://api.pexels.com/videos/search', headers=headers, params=params, timeout=10)
         data = response.json()
-        
-        if not data.get('videos'):
-            return None # 검색 결과 없음
+        if not data.get('videos'): return None
             
-        # 3. 영상 URL 추출 (가장 적당한 화질 선택)
         video_files = data['videos'][0]['video_files']
-        # 너비가 1280에 가까운 파일 찾기 (HD급)
-        target_video = min(video_files, key=lambda x: abs(x['width'] - 1280))
+        target_video = min(video_files, key=lambda x: abs(x['width'] - VIDEO_W))
         video_url = target_video['link']
         
         # 4. 다운로드 및 캐싱
@@ -691,27 +687,26 @@ def get_pexels_video(query, duration):
                 for chunk in vid_response.iter_content(chunk_size=1024):
                     if chunk: f.write(chunk)
                     
-        # 5. MoviePy 클립 변환 및 길이 맞춤
-        clip = VideoFileClip(filepath)
+        clip = VideoFileClip(filepath).without_audio()
         
-        # 소리 제거 (TTS와 겹치므로)
-        clip = clip.without_audio()
-        
-        # 길이 맞추기 로직
         if clip.duration < duration:
-            # 영상이 짧으면 반복(Loop)
-            # vfx.loop는 최신 버전에서 방식이 다를 수 있어 안전하게 수동 반복
             loop_count = int(duration // clip.duration) + 2
             clip = concatenate_videoclips([clip] * loop_count)
             
-        # 필요한 길이만큼 자르기
         clip = clip.subclip(0, duration)
         
-        # 720p로 리사이징
-        clip = clip.resize(height=720)
+        # [핵심] 화면 꽉 차게 크롭 (Crop Center)
+        # 먼저 높이에 맞춰 리사이즈 하거나 너비에 맞춰 리사이즈
+        clip_ratio = clip.w / clip.h
+        target_ratio = VIDEO_W / VIDEO_H
         
-        # 만약 비율이 안 맞으면 중앙 크롭 (16:9 강제)
-        # (간단하게 구현하기 위해 resize만 적용, 필요시 crop 추가 가능)
+        if clip_ratio > target_ratio: # 영상이 더 납작함 -> 높이 기준 리사이즈
+            clip = clip.resize(height=VIDEO_H)
+        else: # 영상이 더 길쭉함 -> 너비 기준 리사이즈
+            clip = clip.resize(width=VIDEO_W)
+            
+        # 중앙 크롭
+        clip = clip.crop(width=VIDEO_W, height=VIDEO_H, x_center=clip.w/2, y_center=clip.h/2)
         
         return clip
 
@@ -721,58 +716,45 @@ def get_pexels_video(query, duration):
 
 def generate_video_veo(prompt, filename):
     """
-    [NEW] Google Veo (Text-to-Video)를 사용하여 영상을 생성합니다.
+    [Ratio Aware] Veo 생성 비율 설정
     """
     if not gemini_key: return None
-    
     output_path = os.path.join(tempfile.gettempdir(), filename)
-    
-    # 이미 생성된 파일이 있으면 캐시 사용 (Veo는 비싸고 오래 걸리므로)
-    if os.path.exists(output_path):
-        return output_path
+    if os.path.exists(output_path): return output_path
 
     try:
         client = genai.Client(api_key=gemini_key)
-        
-        # [중요] 2025년 12월 기준 최신 모델 ID (상황에 따라 'veo-3.1-generate-preview-1015' 등으로 변경 필요)
         model_id = "veo-3.1-generate-preview" 
 
-        # 영상 생성 설정
-        # 24fps, 1080p 등 설정 가능
+        # [핵심] 비율 설정
+        aspect_ratio_val = "9:16" if is_shorts else "16:9"
+        
         generate_config = types.GenerateContentConfig(
-            response_modalities=["VIDEO"], # 응답 형식을 비디오로 설정
+            response_modalities=["VIDEO"],
             video_config=types.VideoConfig(
-                aspect_ratio="16:9", 
+                aspect_ratio=aspect_ratio_val, # 비율 적용
                 sample_count=1, 
-                seconds=6 # 씬당 6초 생성
+                seconds=6
             )
         )
-
+        
+        # ... (이하 동일) ...
         prompt_text = f"Cinematic movie shot, {prompt}, high quality, 4k"
-
-        # 생성 요청 (시간이 30초~1분 정도 소요될 수 있음)
         response = client.models.generate_content(
             model=model_id,
-            contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt_text)])],
+            contents=prompt_text,
             config=generate_config
         )
-        
-        # 응답 처리
+        # ... (저장 로직 동일) ...
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
-                if part.inline_data: # 비디오 데이터가 인라인으로 오는 경우
+                if part.inline_data:
                     with open(output_path, "wb") as f:
                         f.write(part.inline_data.data)
                     return output_path
-                elif part.file_data: # 파일 URI로 오는 경우 (Vertex AI 등)
-                    # 파일 다운로드 로직 필요 (SDK 버전에 따라 다름. 여기선 인라인 가정)
-                    pass
-        
         return None
-
     except Exception as e:
-        print(f"Veo 생성 실패: {e}")
-        # 실패 시 None을 반환하여 기존 AI 이미지(백업)로 넘어가게 함
+        print(f"Veo Error: {e}")
         return None
     
 def create_subtitle(text, duration, font_path):
@@ -1022,16 +1004,31 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
                 clip_duration = scene_duration / len(valid_prompts)
                 scene_sub_clips = []
                 
+                # [수정] 이미지 크롭 함수 (Local Helper)
+                def resize_and_crop(clip, target_w, target_h):
+                    # 비율 유지하며 꽉 차게 리사이즈
+                    clip_ratio = clip.w / clip.h
+                    target_ratio = target_w / target_h
+                    
+                    if clip_ratio > target_ratio:
+                        clip = clip.resize(height=target_h)
+                    else:
+                        clip = clip.resize(width=target_w)
+                    
+                    # 중앙 크롭
+                    return clip.crop(width=target_w, height=target_h, x_center=clip.w/2, y_center=clip.h/2)
+                
                 for sub_idx, raw_text in enumerate(valid_prompts):
                     final_prompt = f"{character_desc}, {raw_text}, {video_style}"
                     img_name = f"img_{idx}_{sub_idx}_{timestamp}.png"
-                    
-                    # [핵심] 여기서 anchor_image_path를 넘겨줍니다!
                     img_path = generate_image_google(final_prompt, img_name, ref_image_path=anchor_image_path)
                     
                     if img_path:
                         try:
-                            sub_clip = ImageClip(img_path).set_duration(clip_duration).resize(height=720)
+                            # [핵심] 리사이즈 대신 resize_and_crop 사용
+                            sub_clip = ImageClip(img_path).set_duration(clip_duration)
+                            sub_clip = resize_and_crop(sub_clip, VIDEO_W, VIDEO_H)
+                            
                             sub_clip = apply_random_motion(sub_clip)
                             scene_sub_clips.append(sub_clip)
                         except: pass
