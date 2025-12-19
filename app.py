@@ -203,22 +203,24 @@ with st.sidebar:
 # [수정] genre_key 인자 추가
 def generate_script_json(topic, num_scenes, genre_key):
     """
-    [Debug Version] 모델 변경(1.5-flash) 및 JSON 강제 추출 로직 적용
+    [Final Fix] 신버전 SDK(google.genai) 적용으로 404 에러 해결
     """
     if not gemini_key: 
         st.error("API 키가 없습니다.")
         return None
     
-    # 선택된 장르의 설정 가져오기 (없으면 기본값 Info)
+    # 선택된 장르의 설정 가져오기
     settings = GENRE_SETTINGS.get(genre_key, GENRE_SETTINGS["📰 정보/뉴스 (Info)"])
     
     try:
-        genai_old.configure(api_key=gemini_key)
+        # [핵심 수정] 구버전(genai_old) 대신 신버전(genai) 클라이언트 사용
+        # 이미지가 잘 되면 이것도 무조건 잘 됩니다.
+        client = genai.Client(api_key=gemini_key)
         
-        # [핵심 수정 1] 모델명을 안정적인 1.5 버전으로 변경
-        model = genai_old.GenerativeModel('gemini-1.5-flash') 
+        # 모델명: 1.5 Flash (가장 안정적)
+        model_id = "gemini-1.5-flash"
         
-        prompt = f"""
+        prompt_text = f"""
         You are a {settings['persona']} specialized in creating viral YouTube Shorts.
         Create a script for the topic: '{topic}'
         
@@ -249,26 +251,33 @@ def generate_script_json(topic, num_scenes, genre_key):
         }}
         """
         
-        response = model.generate_content(prompt)
+        # 신버전 SDK 호출 방식
+        response = client.models.generate_content(
+            model=model_id,
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json" # JSON 강제 모드 (신버전 기능)
+            )
+        )
+        
         text = response.text.strip()
         
-        # [핵심 수정 2] JSON 강제 추출 (앞뒤 잡담 제거)
-        # 문자열에서 첫 번째 '{' 와 마지막 '}' 를 찾아서 그 사이 내용만 가져옵니다.
-        start_idx = text.find('{')
-        end_idx = text.rfind('}') + 1
-        
-        if start_idx != -1 and end_idx != -1:
-            clean_json_text = text[start_idx:end_idx]
-            return json.loads(clean_json_text)
-        else:
-            st.error("AI 응답 형식이 올바르지 않습니다. (JSON 파싱 실패)")
-            # 디버깅을 위해 AI가 뭐라고 답했는지 화면에 출력
-            with st.expander("AI 원본 응답 보기 (디버깅)"):
+        # JSON 파싱 (신버전의 JSON 모드를 썼지만, 혹시 모를 오류 대비 파싱 로직 유지)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # 만약 JSON 모드가 안 먹혔을 경우 수동 추출
+            start_idx = text.find('{')
+            end_idx = text.rfind('}') + 1
+            if start_idx != -1 and end_idx != -1:
+                return json.loads(text[start_idx:end_idx])
+            else:
+                st.error("JSON 파싱 실패: AI 응답 형식이 올바르지 않습니다.")
                 st.text(text)
-            return None
+                return None
         
     except Exception as e:
-        st.error(f"기획 오류 발생: {e}")
+        st.error(f"기획 오류(New SDK): {e}")
         return None
 
 def generate_image_google(prompt, filename, ref_image_path=None):
