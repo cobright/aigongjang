@@ -201,7 +201,7 @@ with st.sidebar:
 # --- 2. 핵심 모듈 함수 ---
 def generate_script_json(topic, num_scenes, genre_key):
     """
-    [Final Fix] 2025년 최신 모델(Gemini 2.5 Flash) 적용으로 404 오류 해결
+    [Final Fix] 컷 쪼개기('||') 지시사항 추가 + Gemini 2.5 Flash 적용
     """
     if not gemini_key: 
         st.error("API 키가 없습니다.")
@@ -210,12 +210,8 @@ def generate_script_json(topic, num_scenes, genre_key):
     settings = GENRE_SETTINGS.get(genre_key, GENRE_SETTINGS["📰 정보/뉴스 (Info)"])
     
     try:
-        # 신버전 SDK 클라이언트 (google-genai)
         client = genai.Client(api_key=gemini_key)
-        
-        # [핵심 수정] 2025년 12월 기준 현역 모델: 'gemini-2.5-flash'
-        # (구형 1.5 모델은 이미 종료되었을 수 있음)
-        model_id = "gemini-2.5-flash"
+        model_id = "gemini-2.5-flash" # 최신 모델
         
         prompt_text = f"""
         You are a {settings['persona']} specialized in creating viral YouTube Shorts.
@@ -230,19 +226,22 @@ def generate_script_json(topic, num_scenes, genre_key):
         [CONSTRAINT - SCENE COUNT]
         Generate exactly {num_scenes} scenes.
         
-        [LANGUAGE RULES]
-        1. "narrative": **KOREAN (한국어)**. Style must match the Tone ({settings['tone']}).
-        2. "visual_prompt": **KOREAN (한국어)**.
-        3. **Visual Strategy**:
+        [VISUAL RULES]
+        1. "visual_prompt": **KOREAN (한국어)**.
+        2. **Dynamic Cuts (Important)**: 
+           - To make the video dynamic, split multiple visual actions in one scene using " || ".
+           - Example: "남자가 커피를 마신다 || 창밖을 바라보는 남자 || 클로즈업 된 커피잔"
+        3. **Stock Video**:
+           - Use `[VIDEO] keyword` for generic scenes (Sky, City, Coffee).
+        4. **Visual Strategy**:
            - If the genre is 'Review' or 'Info', focus on showing the object/fact clearly.
            - If the genre is 'Story' or 'Motivation', focus on facial expressions and atmosphere.
-           - Use `[VIDEO] keyword` for generic scenes (Sky, City, Coffee).
         
         [OUTPUT JSON FORMAT]
         {{
           "video_title": "Title in Korean",
           "scenes": [
-            {{ "seq": 1, "narrative": "Korean script...", "visual_prompt": "Korean description..." }},
+            {{ "seq": 1, "narrative": "Korean script...", "visual_prompt": "Description 1 || Description 2..." }},
             ...
           ]
         }}
@@ -258,21 +257,19 @@ def generate_script_json(topic, num_scenes, genre_key):
         
         text = response.text.strip()
         
-        # JSON 파싱
         try:
             return json.loads(text)
         except json.JSONDecodeError:
+            # 파싱 실패 시 수동 추출
             start_idx = text.find('{')
             end_idx = text.rfind('}') + 1
             if start_idx != -1 and end_idx != -1:
                 return json.loads(text[start_idx:end_idx])
             else:
-                st.error("JSON 파싱 실패: AI 응답 형식이 올바르지 않습니다.")
-                st.text(text)
                 return None
         
     except Exception as e:
-        # 만약 2.5도 안 되면 2.0으로 자동 대체하는 2차 안전장치
+        # 2.5 실패 시 2.0으로 백업
         if "404" in str(e):
              st.warning(f"Gemini 2.5를 찾을 수 없어 2.0으로 재시도합니다.")
              try:
@@ -284,9 +281,9 @@ def generate_script_json(topic, num_scenes, genre_key):
                 return json.loads(response.text.strip())
              except:
                  pass
-                 
-        st.error(f"기획 오류(Gemini 2.5): {e}")
+        st.error(f"기획 오류: {e}")
         return None
+    
 
 def generate_image_google(prompt, filename, ref_image_path=None):
     """
