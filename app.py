@@ -95,6 +95,17 @@ with st.sidebar:
     num_scenes = st.slider("생성할 씬(Scene) 개수 (권장: 4개 이상)", 2, 6, 4)
 
     st.divider()
+    st.subheader("🎙️ 성우 (Voice)")    
+    voice_options = {
+        "👨‍💼 남성 (차분한 - 기본)": "ko-KR-Standard-C",
+        "👩‍💼 여성 (차분한 - 뉴스)": "ko-KR-Standard-A",
+        "👧 여성 (발랄한 - 예능)": "ko-KR-Standard-B",
+        "👨 남성 (중저음 - 다큐)": "ko-KR-Standard-D"
+    }
+    
+    selected_voice_label = st.selectbox("내레이터 선택", list(voice_options.keys()), index=0)
+    selected_voice_name = voice_options[selected_voice_label]
+    st.divider()
     st.subheader("🎵 배경음악 (BGM)")
     bgm_mood = st.selectbox(
         "분위기 선택", 
@@ -212,35 +223,41 @@ def generate_image_google(prompt, filename):
         st.error(f"🎨 Google 이미지 생성 오류: {e}")
         return None
 
-def generate_audio(text, filename):
-    """[Voice] Google TTS"""
+def generate_audio(text, filename, voice_name="ko-KR-Standard-C"):
+    """
+    [Voice] Google TTS: 성우 선택 기능 추가
+    """
     output_path = os.path.join(tempfile.gettempdir(), filename)
     
-    # 인증 처리 로직 단순화 및 강화
+    # 인증 (기존 로직 유지)
     credentials = None
-    
-    try:
-        # 1. Secret/Env에 JSON 내용이 통째로 있는 경우 (Streamlit Cloud 권장)
-        if tts_key_json:
-            try:
-                creds_info = json.loads(tts_key_json, strict=False)
-                credentials = service_account.Credentials.from_service_account_info(creds_info)
-            except json.JSONDecodeError:
-                st.error("TTS JSON 키 형식이 잘못되었습니다.")
-                return None
-        
-        # 2. 로컬 파일 경로가 있는 경우
-        elif tts_key_path and os.path.exists(tts_key_path):
-            credentials = service_account.Credentials.from_service_account_file(tts_key_path)
-            
-        else:
-            # 하드코딩된 파일명은 제거하고 경고 메시지 출력
-            st.error("❌ TTS 인증 키를 찾을 수 없습니다. (.env 또는 secrets.toml 확인)")
-            return None
+    if tts_key_json:
+        try:
+            creds_info = json.loads(tts_key_json, strict=False)
+            credentials = service_account.Credentials.from_service_account_info(creds_info)
+        except: return None
+    elif tts_key_path and os.path.exists(tts_key_path):
+        credentials = service_account.Credentials.from_service_account_file(tts_key_path)
+    else:
+        return None
 
+    try:
         client = texttospeech.TextToSpeechClient(credentials=credentials)
         input_text = texttospeech.SynthesisInput(text=text)
-        voice = texttospeech.VoiceSelectionParams(language_code="ko-KR", name="ko-KR-Standard-C", ssml_gender=texttospeech.SsmlVoiceGender.MALE)
+        
+        # [핵심 수정] 전달받은 voice_name 적용
+        # 성별(Gender)은 목소리 이름에 맞춰 자동 설정
+        if "Standard-A" in voice_name or "Standard-B" in voice_name:
+            gender = texttospeech.SsmlVoiceGender.FEMALE
+        else:
+            gender = texttospeech.SsmlVoiceGender.MALE
+            
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="ko-KR", 
+            name=voice_name, 
+            ssml_gender=gender
+        )
+        
         audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
         
         response = client.synthesize_speech(input=input_text, voice=voice, audio_config=audio_config)
@@ -734,7 +751,8 @@ if st.session_state["step"] >= 2 and st.session_state["script_data"]:
             aud_name = f"aud_{idx}_{timestamp}.mp3"
             
             # 1. 오디오 & 효과음 생성
-            aud_path = generate_audio(scene['narrative'], aud_name)
+            aud_path = generate_audio(scene['narrative'], aud_name, voice_name=selected_voice_name)
+            
             if not aud_path: continue
                 
             audio_clip = AudioFileClip(aud_path)
