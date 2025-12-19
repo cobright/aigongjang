@@ -203,16 +203,20 @@ with st.sidebar:
 # [수정] genre_key 인자 추가
 def generate_script_json(topic, num_scenes, genre_key):
     """
-    [Planning] 장르별 최적화 로직이 적용된 기획안 생성
+    [Debug Version] 모델 변경(1.5-flash) 및 JSON 강제 추출 로직 적용
     """
-    if not gemini_key: return None
+    if not gemini_key: 
+        st.error("API 키가 없습니다.")
+        return None
     
-    # 선택된 장르의 설정 가져오기
+    # 선택된 장르의 설정 가져오기 (없으면 기본값 Info)
     settings = GENRE_SETTINGS.get(genre_key, GENRE_SETTINGS["📰 정보/뉴스 (Info)"])
     
     try:
         genai_old.configure(api_key=gemini_key)
-        model = genai_old.GenerativeModel('gemini-2.5-flash') 
+        
+        # [핵심 수정 1] 모델명을 안정적인 1.5 버전으로 변경
+        model = genai_old.GenerativeModel('gemini-1.5-flash') 
         
         prompt = f"""
         You are a {settings['persona']} specialized in creating viral YouTube Shorts.
@@ -247,12 +251,24 @@ def generate_script_json(topic, num_scenes, genre_key):
         
         response = model.generate_content(prompt)
         text = response.text.strip()
-        if text.startswith("```json"): text = text[7:]
-        if text.endswith("```"): text = text[:-3]
-        return json.loads(text)
+        
+        # [핵심 수정 2] JSON 강제 추출 (앞뒤 잡담 제거)
+        # 문자열에서 첫 번째 '{' 와 마지막 '}' 를 찾아서 그 사이 내용만 가져옵니다.
+        start_idx = text.find('{')
+        end_idx = text.rfind('}') + 1
+        
+        if start_idx != -1 and end_idx != -1:
+            clean_json_text = text[start_idx:end_idx]
+            return json.loads(clean_json_text)
+        else:
+            st.error("AI 응답 형식이 올바르지 않습니다. (JSON 파싱 실패)")
+            # 디버깅을 위해 AI가 뭐라고 답했는지 화면에 출력
+            with st.expander("AI 원본 응답 보기 (디버깅)"):
+                st.text(text)
+            return None
         
     except Exception as e:
-        st.error(f"기획 오류: {e}")
+        st.error(f"기획 오류 발생: {e}")
         return None
 
 def generate_image_google(prompt, filename, ref_image_path=None):
