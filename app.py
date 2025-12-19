@@ -90,10 +90,9 @@ with st.sidebar:
     )
 
 # --- 2. 핵심 모듈 함수 ---
-
 def generate_script_json(topic, character_desc, num_scenes):
     """
-    [Text] Gemini: 개수 제한 엄수 및 포맷 강제
+    [Text] Gemini: 한글 텍스트 렌더링 규칙 추가
     """
     if not gemini_key: return None
     
@@ -101,29 +100,30 @@ def generate_script_json(topic, character_desc, num_scenes):
         genai_old.configure(api_key=gemini_key)
         model = genai_old.GenerativeModel('gemini-2.5-flash') 
         
-        # 구조화된 프롬프트 설계
         prompt = f"""
         You are a YouTube Shorts Director. Create a script for: '{topic}'
         
         [CONSTRAINT - SCENE COUNT]
         You must generate **EXACTLY {num_scenes} scenes**.
-        - If scenes=2: Scene 1 (Hook/Intro), Scene 2 (Conclusion/Action).
-        - If scenes=4: Hook -> Body -> Body -> Outro.
         
         [LANGUAGE RULES]
         1. "narrative": **KOREAN (한국어)**. Casual spoken style.
-        2. "visual_prompt": **ENGLISH (영어)**. This is crucial for the image generator.
+        2. "visual_prompt": **ENGLISH (영어)** for descriptions.
+        3. **[CRITICAL] KOREAN TEXT IN IMAGE**: 
+           - If a scene needs specific text (e.g., a signboard, a letter, a phone screen), describe the object in English but write the **text content in KOREAN inside double quotes**.
+           - Format: `Object description ..., text reads "한국어 내용", style ...`
+           - Example: `A neon sign on a dark street that says "라면 맛집" || A hand holding a smartphone showing a message "입금 완료"`
         
         [CONTENT GUIDE]
-        - Split visual actions using " || " for dynamic cuts (e.g., "Face close up || Hand action").
-        - **DO NOT** include the character description in the JSON output. I will add it programmatically. Just describe the action.
+        - Split visual actions using " || " for dynamic cuts.
+        - **DO NOT** include the character description in the JSON output.
         
         [OUTPUT JSON FORMAT]
         {{
           "video_title": "Korean Title",
           "scenes": [
-            {{ "seq": 1, "narrative": "안녕하세요...", "visual_prompt": "A man drinking coffee || Close up of cup" }},
-            ... (Total {num_scenes} items)
+            {{ "seq": 1, "narrative": "이 간판 보이시죠?", "visual_prompt": "A bright yellow wooden sign that reads \"원조 맛집\" hanging on a wall" }},
+            ...
           ]
         }}
         """
@@ -135,7 +135,7 @@ def generate_script_json(topic, character_desc, num_scenes):
         return json.loads(text)
         
     except Exception as e:
-        st.error(f"🧠 Gemini 기획 오류: {e}")
+        st.error(f"기획 오류: {e}")
         return None
 
 def generate_image_google(prompt, filename):
